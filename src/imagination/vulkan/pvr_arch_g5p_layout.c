@@ -17,6 +17,7 @@
 
 #include <assert.h>
 #include <inttypes.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -265,6 +266,32 @@ g5p_own(const struct pvr_transfer_cmd *cmd)
    return false;
 }
 
+/* Low-volume qualification trace. Transfer fills of RGBA32 images originate at
+ * vkCmdClearColorImage; render-pass and ClearAttachments paths trace in their own hooks. */
+static void
+g5p_dgl_transfer_log(struct pvr_device *device, struct pvr_sub_cmd_transfer *sub, bool after)
+{
+   if (!getenv("PVR_G5P_DGL_LOG")) return;
+   list_for_each_entry (struct pvr_transfer_cmd, cmd, sub->transfer_cmds, link) {
+      bool raw = vk_format_get_blocksize(cmd->dst.vk_format) == 16;
+      for (unsigned i=0;i<cmd->source_count;i++)
+         raw |= vk_format_get_blocksize(cmd->sources[i].surface.vk_format) == 16;
+      if (!raw) continue;
+      if (!after && (cmd->flags & PVR_TRANSFER_CMD_FLAGS_FILL))
+         fprintf(stderr,"DGL-CLEAR entry=vkCmdClearColorImage transfer-fill format=%u value=%08x,%08x,%08x,%08x\n",
+                 cmd->dst.vk_format,cmd->clear_color[0].ui,cmd->clear_color[1].ui,cmd->clear_color[2].ui,cmd->clear_color[3].ui);
+      fprintf(stderr,"DGL-COPY phase=%s sources=%u dst-format=%u stride=%u size=%ux%u layout=%u\n",
+              after?"after":"before",cmd->source_count,cmd->dst.vk_format,cmd->dst.stride,cmd->dst.width,cmd->dst.height,cmd->dst.mem_layout);
+      if (after) {
+         const uint8_t *p=PVR_PER_ARCH(g9p_cpu_addr)(device,cmd->dst.dev_addr.addr);
+         if (p && cmd->dst.width && cmd->dst.height) {
+            uint32_t v[4];memcpy(v,p,16);
+            fprintf(stderr,"DGL-COPY dst-first=%08x,%08x,%08x,%08x\n",v[0],v[1],v[2],v[3]);
+         }
+      }
+   }
+}
+
 VkResult
 PVR_PER_ARCH(g5p_transfer_submit)(struct pvr_device *device, struct pvr_sub_cmd_transfer *sub_cmd,
                                   struct vk_sync *wait_sync, struct vk_sync *signal_sync)
@@ -274,8 +301,12 @@ PVR_PER_ARCH(g5p_transfer_submit)(struct pvr_device *device, struct pvr_sub_cmd_
 
    list_for_each_entry (struct pvr_transfer_cmd, cmd, sub_cmd->transfer_cmds, link)
       own |= g5p_own(cmd);
-   if (!own)
-      return pvr_arch_g9p_transfer_submit(device, sub_cmd, wait_sync, signal_sync);
+   g5p_dgl_transfer_log(device, sub_cmd, false);
+   if (!own) {
+      result = pvr_arch_g9p_transfer_submit(device, sub_cmd, wait_sync, signal_sync);
+      if (result == VK_SUCCESS) g5p_dgl_transfer_log(device, sub_cmd, true);
+      return result;
+   }
 
    if (wait_sync) {
       result = vk_sync_wait(&device->vk, wait_sync, 0, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
@@ -284,5 +315,6 @@ PVR_PER_ARCH(g5p_transfer_submit)(struct pvr_device *device, struct pvr_sub_cmd_
    }
    list_for_each_entry (struct pvr_transfer_cmd, cmd, sub_cmd->transfer_cmds, link)
       g5p_run(device, cmd);
+   g5p_dgl_transfer_log(device, sub_cmd, true);
    return vk_sync_signal(&device->vk, signal_sync, 0);
 }

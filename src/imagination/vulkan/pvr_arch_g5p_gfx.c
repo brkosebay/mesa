@@ -484,6 +484,12 @@ g5p_check_state(struct pvr_device *device, const VkGraphicsPipelineCreateInfo *c
    const char *why = pvr_arch_g5p_blend_fs_key(s, colors, key);
    if (why)
       return G5P_REFUSE(device, "colour blend state: %s", why);
+   if (vk_format_is_int(cf) && cf != VK_FORMAT_R32G32B32A32_UINT && cf != VK_FORMAT_R32G32B32A32_SINT)
+      return G5P_REFUSE(device, "integer boundary qualification supports CLEAR only");
+   if (cf == VK_FORMAT_R32G32B32A32_UINT)
+      key->color_output = PCO_G5P_COLOR_UINT32;
+   if (cf == VK_FORMAT_R32G32B32A32_SINT)
+      key->color_output = PCO_G5P_COLOR_SINT32;
    return VK_SUCCESS;
 }
 
@@ -868,7 +874,10 @@ g5p_clear_pipeline(struct pvr_cmd_buffer *cmd_buffer, VkFormat format, const str
       if (result != VK_SUCCESS)
          goto done;
    }
-   struct nir_shader *vs = pvr_g5p_clear_nir(true), *fs = pvr_g5p_clear_nir(false);
+   struct nir_shader *vs = pvr_g5p_clear_nir(true);
+   struct nir_shader *fs = format == VK_FORMAT_R32G32B32A32_UINT || format == VK_FORMAT_R32G32B32A32_SINT
+                             ? pvr_g5p_clear_nir_raw(false, format == VK_FORMAT_R32G32B32A32_SINT)
+                             : pvr_g5p_clear_nir(false);
    const VkPipelineShaderStageCreateInfo stages[2] = {
       { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
         .module = vk_shader_module_handle_from_nir(vs), .pName = "main" },
@@ -956,8 +965,11 @@ PVR_PER_ARCH(g5p_clear_attachments)(struct pvr_cmd_buffer *cmd_buffer, uint32_t 
       return G5P_REFUSE(cmd_buffer, "vkCmdClearAttachments at %u samples (one is built)", hw_render->sample_count);
    const struct pvr_image_view *iview = info->attachments[hw_render->eot_surfaces[0].attachment_idx];
    const VkFormat format = iview->vk.format;
-   if (vk_format_is_int(format))
-      return G5P_REFUSE(cmd_buffer, "vkCmdClearAttachments of an integer target (%s)", vk_Format_to_str(format));
+   if (getenv("PVR_G5P_DGL_LOG"))
+      fprintf(stderr, "DGL-CLEAR entry=vkCmdClearAttachments format=%s attachments=%u rects=%u\n",
+              vk_Format_to_str(format),attachment_count,rect_count);
+   if (vk_format_is_int(format) && format != VK_FORMAT_R32G32B32A32_UINT && format != VK_FORMAT_R32G32B32A32_SINT)
+      return G5P_REFUSE(cmd_buffer, "vkCmdClearAttachments of an unsupported integer target (%s)", vk_Format_to_str(format));
 
    const VkClearColorValue *colour = NULL;
    for (uint32_t i = 0; i < attachment_count; i++) {

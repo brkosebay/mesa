@@ -593,8 +593,8 @@ submit(VkCommandBuffer cmd)
 
 /* ---- rungs ---- */
 
-enum kind { K_SAMPLE, K_FILTER, K_MIP, K_FETCH, K_RENDER, K_BLEND, K_BLIT, K_LAYOUT };
-static const char kind_prefix[] = { 's', 'f', 'm', 'x', 'r', 'b', 'k', 'l' };
+enum kind { K_SAMPLE, K_FILTER, K_MIP, K_FETCH, K_RENDER, K_BLEND, K_BLIT, K_LAYOUT, K_CLEAR };
+static const char kind_prefix[] = { 's', 'f', 'm', 'x', 'r', 'b', 'k', 'l', 'c' };
 
 struct layout_case {
    const char *name;
@@ -644,7 +644,7 @@ feature_of(enum kind k)
    switch (k) {
    case K_SAMPLE: case K_MIP: case K_FETCH: case K_LAYOUT: return VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
    case K_FILTER: return VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
-   case K_RENDER: return VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+   case K_CLEAR: case K_RENDER: return VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
    case K_BLIT: return VK_FORMAT_FEATURE_BLIT_SRC_BIT;
    default: return VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
    }
@@ -663,8 +663,8 @@ add(const struct fmt *f, enum kind k, unsigned shift)
 
 /* The render candidates: the formats a fragment program's four f16 outputs
  * and a PBE could write (8-bit RGBA, sRGB, 10_10_10_2, R/RG 8, half float,
- * 11_11_10 float). Integer targets need integer outputs: no rung here, so a
- * device advertising them fails --coverage. */
+ * 11_11_10 float). RGBA32 integer targets have separate typed raw-output
+ * rungs, added in the integer branch of build_rungs(). */
 static bool
 render_candidate(const struct fmt *f)
 {
@@ -691,6 +691,12 @@ build_rungs(void)
             add(f, K_SAMPLE, s);
          if (f->vk == VK_FORMAT_R32_UINT || f->vk == VK_FORMAT_R8G8B8A8_UINT)
             add(f, K_FETCH, 0);
+         if (f->vk == VK_FORMAT_R32G32B32A32_UINT || f->vk == VK_FORMAT_R32G32B32A32_SINT)
+            add(f, K_RENDER, 0);
+         if (f->vk == VK_FORMAT_R32G32B32A32_UINT || f->vk == VK_FORMAT_R32G32B32A32_SINT ||
+             f->vk == VK_FORMAT_R32G32_UINT || f->vk == VK_FORMAT_R32G32_SINT ||
+             f->vk == VK_FORMAT_R16G16B16A16_UINT)
+            add(f, K_CLEAR, 0);
          continue;
       }
       add(f, K_SAMPLE, 0);
@@ -1596,6 +1602,7 @@ run_render(const struct rung *r)
 {
    const struct fmt *f = r->f;
    const bool blend = r->kind == K_BLEND;
+   const bool raw32 = f->vk == VK_FORMAT_R32G32B32A32_UINT || f->vk == VK_FORMAT_R32G32B32A32_SINT;
    const double *dst = blend ? CLEAR_B : CLEAR, *src = blend ? SRC_B : SRC;
    struct img target;
    struct buf vb, rb;
@@ -1603,7 +1610,13 @@ run_render(const struct rung *r)
 
    /* the expected texels: the clear on the right, the colour (or the blend) on the left */
    uint8_t left[16] = { 0 }, right[16] = { 0 };
-   for (unsigned c = 0; c < 4; c++) {
+   const uint32_t raw_src[4] = { 0x80000001u, 0x7fffffffu, 0x12345678u, 0xffffffffu };
+   const uint32_t raw_dst[4] = { 0, 17, 0x10001u, 0x76543210u };
+   if (raw32) {
+      memcpy(left, raw_src, sizeof(left));
+      memcpy(right, raw_dst, sizeof(right));
+   }
+   for (unsigned c = 0; !raw32 && c < 4; c++) {
       const struct ch *ch = &f->c[c];
       const double sa = src[3];
       const double lv = !blend ? src[c] : c == 3 ? src[3] + dst[3] * (1 - sa) : src[c] * sa + dst[c] * (1 - sa);
@@ -1634,14 +1647,19 @@ run_render(const struct rung *r)
    CHECK(vkCreatePipelineLayout(dev, &lci, NULL, &layout));
    /* the colour is compiled into solid.frag / solid-b.frag (SRC, SRC_B: build.sh) */
    VkPipeline pipe;
-   if (make_pipeline(rp, layout, blend ? spv_solid_b_frag : spv_solid_frag,
-                     blend ? sizeof(spv_solid_b_frag) : sizeof(spv_solid_frag), blend, &pipe))
+   const uint32_t *fs = raw32 ? (f->vk == VK_FORMAT_R32G32B32A32_UINT ? spv_solid_u32_frag : spv_solid_i32_frag)
+                             : (blend ? spv_solid_b_frag : spv_solid_frag);
+   const size_t fs_size = raw32 ? (f->vk == VK_FORMAT_R32G32B32A32_UINT ? sizeof(spv_solid_u32_frag) : sizeof(spv_solid_i32_frag))
+                               : (blend ? sizeof(spv_solid_b_frag) : sizeof(spv_solid_frag));
+   if (make_pipeline(rp, layout, fs, fs_size, blend, &pipe))
       return 1;
    if (quad(&vb, 0, 0, 0, 0, 0))
       return 1;
    if (begin(&cmd))
       return 1;
-   const VkClearValue cv = { .color.float32 = { (float)dst[0], (float)dst[1], (float)dst[2], (float)dst[3] } };
+   VkClearValue cv = { .color.float32 = { (float)dst[0], (float)dst[1], (float)dst[2], (float)dst[3] } };
+   if (raw32)
+      memcpy(cv.color.uint32, raw_dst, sizeof(raw_dst));
    const VkRenderPassBeginInfo rbi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp,
                                        .framebuffer = fb, .renderArea = { { 0, 0 }, { W, H } }, .clearValueCount = 1,
                                        .pClearValues = &cv };
@@ -1669,6 +1687,66 @@ run_render(const struct rung *r)
    vkDestroyRenderPass(dev, rp, NULL);
    free_image(&target);
    return ret;
+}
+
+/* c-<integer format>: clear-only width boundary, independent of FS outputs.
+ * Four patterns exercise every bit position, signed extrema, and uint16
+ * saturation. CPU transfer/readback is shared with the proven format suite.
+ */
+static int
+run_integer_clear(const struct rung *r)
+{
+   const uint32_t values[][4] = {
+      {0, 17, 0x10001u, 0x76543210u},
+      {0x80000001u, 0x7fffffffu, 0x12345678u, 0xffffffffu},
+      {0x0000ffffu, 0x00010000u, 0xffff0000u, 0x80000000u},
+      {0x55555555u, 0xaaaaaaaau, 0x01234567u, 0x89abcdefu},
+      {0x0001u, 0x1234u, 0x89abu, 0xfedcu},
+      {0xfedcu, 0x89abu, 0x1234u, 0x0001u},
+      {0, 0xffffu, 0x8000u, 0x7fffu},
+      {0x8000u, 0x7fffu, 0, 0xffffu},
+   };
+   int failed = 0;
+   const unsigned patterns = r->f->vk == VK_FORMAT_R16G16B16A16_UINT ? ARRAY_LEN(values) : 4;
+   for (unsigned k = 0; k < patterns; k++) {
+      const struct fmt *f = r->f;
+      struct img target;
+      struct buf rb;
+      VkRenderPass rp;
+      VkFramebuffer fb;
+      VkCommandBuffer cmd;
+      if (make_image(&target, f->vk, W, H, 1,
+                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
+          make_pass(f->vk, target.view, VK_ATTACHMENT_LOAD_OP_CLEAR, &rp, &fb) || begin(&cmd))
+         return 1;
+      uint8_t want[16] = {0};
+      for (unsigned c = 0; c < 4; c++) {
+         const struct ch *ch = &f->c[c];
+         uint32_t v = values[k][c];
+         if (ch->bits == 16 && v > 65535) v = 65535;
+         if (ch->bits) put_bits(want, ch->off, ch->bits, v);
+      }
+      VkClearValue cv;
+      memcpy(cv.color.uint32, values[k], sizeof(values[k]));
+      const VkRenderPassBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+         .renderPass = rp, .framebuffer = fb, .renderArea = {{0,0},{W,H}},
+         .clearValueCount = 1, .pClearValues = &cv };
+      vkCmdBeginRenderPass(cmd, &bi, VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdEndRenderPass(cmd);
+      if (submit(cmd) || read_target(target.image, f->vk, f->cpp, &rb)) return 1;
+      struct result res = {0};
+      for (unsigned y = 0; verify && y < H; y++)
+         for (unsigned x = 0; x < W; x++)
+            note(&res, x, y, rb.map + ((size_t)y*W+x)*f->cpp, want, f->cpp);
+      printf("INTEGER-CLEAR format=%s pattern=%u words=%u clear=%08x,%08x,%08x,%08x\n",
+             f->name, k, f->cpp/4, values[k][0], values[k][1], values[k][2], values[k][3]);
+      failed |= report(r, &res);
+      free_buffer(&rb);
+      vkDestroyFramebuffer(dev, fb, NULL);
+      vkDestroyRenderPass(dev, rp, NULL);
+      free_image(&target);
+   }
+   return failed;
 }
 
 /* ---- blit rungs ---- */
@@ -1891,7 +1969,7 @@ main(int argc, char **argv)
       }
       cur = r->name;
       ran++;
-      if (!(r->kind == K_RENDER || r->kind == K_BLEND ? run_render(r)
+      if (!(r->kind == K_CLEAR ? run_integer_clear(r) : r->kind == K_RENDER || r->kind == K_BLEND ? run_render(r)
             : r->kind == K_BLIT                    ? run_blit(r)
             : r->kind == K_LAYOUT                  ? run_layout(r)
                                                    : run_texture(r)))
