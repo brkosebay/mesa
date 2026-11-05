@@ -4107,6 +4107,7 @@ static void fs_prologue(struct gctx *c)
 static void fs_discards(struct gctx *c)
 {
    uint8_t raw[G5P_USC_MAX];
+   c->p->discard_tokens = c->ndiscards + c->discard_always;
    for (unsigned i = 0; i < c->ndiscards; i++) {
       struct cond k = cond_of(c, c->discards[i], 0);
       unsigned b = k.zero_b ? reg_of(c, k.a, "discard condition")
@@ -4733,6 +4734,7 @@ static void select_discards(struct gctx *c, nir_shader *nir)
    if (c->vs || (c->blend != BLEND_PREMULT && c->blend != BLEND_STRAIGHT_OVER))
       return;
    NIR_PASS(progress, nir, discards_to_select);
+   c->p->discard_select = progress;
    if (!progress)
       return;
    NIR_PASS(_, nir, nir_lower_alu_to_scalar, NULL, NULL);
@@ -4817,6 +4819,51 @@ static bool discards_to_flag(nir_shader *nir)
       return nir_no_progress(impl);
    b = nir_builder_at(nir_after_impl(impl));
    nir_demote_if(&b, nir_load_var(&b, flag));
+   return nir_progress(true, impl, nir_metadata_none);
+}
+
+/* Key punch: every discard left at the top level (all of them after
+ * flattening and cf_discards()) becomes one demote_if on the OR of their
+ * conditions, or one demote if any is unconditional, at the end of the
+ * program; fs_discards() then emits one token. Apple's compiler gives a
+ * program with two discard conditions one `04 60` (f_discard2,
+ * tools/mesa-a9-punchds), and the OR of materialized conditions is the
+ * flag form discards_to_flag() already runs on hardware (cf7). */
+static bool merge_discards(nir_shader *nir)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   nir_intrinsic_instr *list[32];
+   unsigned n = 0;
+   bool always = false;
+   nir_foreach_block(block, impl) {
+      if (block->cf_node.parent->type != nir_cf_node_function)
+         continue;
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
+         if (in->intrinsic != nir_intrinsic_demote && in->intrinsic != nir_intrinsic_terminate &&
+             in->intrinsic != nir_intrinsic_demote_if && in->intrinsic != nir_intrinsic_terminate_if)
+            continue;
+         if (n == ARRAY_SIZE(list))
+            return nir_no_progress(impl); /* fs_discards() refuses this many anyway */
+         always |= in->intrinsic == nir_intrinsic_demote || in->intrinsic == nir_intrinsic_terminate;
+         list[n++] = in;
+      }
+   }
+   if (n < 2)
+      return nir_no_progress(impl);
+   nir_builder b = nir_builder_at(nir_after_impl(impl));
+   if (always) {
+      nir_demote(&b);
+   } else {
+      nir_def *k = list[0]->src[0].ssa;
+      for (unsigned i = 1; i < n; i++)
+         k = nir_ior(&b, k, list[i]->src[0].ssa);
+      nir_demote_if(&b, k);
+   }
+   for (unsigned i = 0; i < n; i++)
+      nir_instr_remove(&list[i]->instr);
    return nir_progress(true, impl, nir_metadata_none);
 }
 
@@ -5263,7 +5310,9 @@ static void codegen_reset(struct gctx *c)
    uint32_t ev = c->p->evidence & (PCO_G5P_EV_FLATTEN | PCO_G5P_EV_CF);
    unsigned blend = c->p->blend_mode;
    bool vertex = c->p->vertex;
+   bool discard_select = c->p->discard_select;
    memset(c->p, 0, sizeof(*c->p));
+   c->p->discard_select = discard_select;
    c->p->evidence = ev;
    c->p->blend_mode = blend;
    c->p->vertex = vertex;
@@ -5352,7 +5401,23 @@ bool pco_g5p_compile_general_link(nir_shader *nir, bool half_output, const uint8
    fuse_ffma(c, nir);
    if (!c->vs && cf_left(nir))
       cf_discards(nir);
-   select_discards(c, nir);
+   if (c->vs || !c->key->punch)
+      select_discards(c, nir);
+   if (!c->vs && c->key->punch) {
+      bool progress = false;
+      NIR_PASS(progress, nir, merge_discards);
+      if (progress) {
+         NIR_PASS(_, nir, nir_lower_alu_to_scalar, NULL, NULL);
+         do {
+            progress = false;
+            NIR_PASS(progress, nir, nir_opt_copy_prop);
+            NIR_PASS(progress, nir, nir_opt_dce);
+            NIR_PASS(progress, nir, nir_opt_constant_folding);
+            NIR_PASS(progress, nir, nir_opt_algebraic);
+            NIR_PASS(progress, nir, nir_opt_cse);
+         } while (progress);
+      }
+   }
    if (!c->vs && cf_left(nir)) {
       c->cf = true;
       out->evidence |= PCO_G5P_EV_CF;

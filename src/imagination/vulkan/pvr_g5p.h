@@ -191,6 +191,12 @@ struct pvr_g5p_pipeline {
    /* the fragment program discards (punch-through, no triangle merging);
     * it reads a flat varying */
    bool fs_discard, fs_flat;
+   unsigned fs_discard_tokens;
+   bool fs_discard_select;
+   /* Full linked variant: its uploads/varyings may differ after retaining a kill.
+    * Original colour-only programs remain byte-identical. */
+   struct pvr_g5p_pipeline *punch;
+   bool punch_variant;
    /* a point pipeline: the vertex program writes the point size after the
     * position (pco_g5p_vs_link::point_size) */
    bool vs_point_size;
