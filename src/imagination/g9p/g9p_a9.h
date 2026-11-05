@@ -6,6 +6,9 @@
 #define G9P_A9_END_PAD(ctx) do { if ((ctx)->out->a9 && (2*(ctx)->c->n+6)%64==0) G9P_EMIT((ctx)->c,0xc000); } while(0)
 #define G9P_A9_CTX_FIELDS unsigned a9_barriers_remaining;
 #define G9P_A9_GENERATE_INIT a9_generate_init(ctx, impl)
+/* emit_if() hoists an empty branch's break ahead of the other branch. */
+#define G9P_A9_EMPTY_BREAK_BEFORE(ctx, side) do { if (!(side)) (ctx)->ip++; } while (0)
+#define G9P_A9_EMPTY_BREAK_AFTER(ctx, side) do { if (side) (ctx)->ip++; } while (0)
 struct g9p_shader;
 bool g9p_a9_compile_compute(nir_shader *, struct g9p_shader *, void *);
 #else
@@ -13,5 +16,7 @@ bool g9p_a9_compile_compute(nir_shader *, struct g9p_shader *, void *);
 #define G9P_A9_CTX_FIELDS
 #define G9P_A9_GENERATE_INIT ((void)0)
 #define G9P_A9_END_PAD(ctx) ((void)0)
+#define G9P_A9_EMPTY_BREAK_BEFORE(ctx, side) (ctx)->ip++
+#define G9P_A9_EMPTY_BREAK_AFTER(ctx, side) ((void)0)
 #endif
 #endif
