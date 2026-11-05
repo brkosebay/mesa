@@ -29,6 +29,7 @@
 #   include "pvr_g5p_tex.h"
 #   include "pvr_g5p_xfb.h"
 #   include "pvr_g5p_memory.h"
+#   include "pvr_g5p_shm.h"
 #endif
 
 /* pvr_arch_image.c, pvr_CreateImageView(): the sampled state of a view is
@@ -67,6 +68,25 @@
    if (PVR_HAS_FEATURE(&(device)->pdevice->dev_info, apple_g5p)) {           \
       const unsigned cpp_ = vk_format_get_blocksize((create_info)->format); \
       align = cpp_ && 64 % cpp_ == 0 ? 64 / cpp_ : 64;                      \
+      const VkImageDrmFormatModifierExplicitCreateInfoEXT *shm_ =           \
+         pvr_g5p_shm_explicit(create_info);                                \
+      if (shm_ && shm_->drmFormatModifier == DRM_FORMAT_MOD_LINEAR &&                          \
+          shm_->drmFormatModifierPlaneCount == 1) {                        \
+         if (shm_->pPlaneLayouts[0].offset % 16 ||                          \
+             shm_->pPlaneLayouts[0].rowPitch % 16)                         \
+            return VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT; \
+         if (cpp_ && 16 % cpp_ == 0) align = 16 / cpp_;                     \
+      }                                                                    \
+   }
+
+/* Public memory-relative plane offset; internal transfer offsets stay image-relative. */
+#define PVR_G5P_HOOK_shm_layout_public(image, subresource, layout)          \
+   if (PVR_HAS_FEATURE(&container_of((image)->vk.base.device, struct pvr_device, \
+                                     vk)->pdevice->dev_info, apple_g5p)) { \
+      pvr_get_image_subresource_layout(image, &(subresource)->imageSubresource, \
+                                       &(layout)->subresourceLayout);     \
+      (layout)->subresourceLayout.offset += (image)->import_offset;        \
+      return;                                                            \
    }
 
 /* A G5P 3D image is a 2D array of its slices (pvr_g5p_image_layout(); it
