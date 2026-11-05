@@ -1445,7 +1445,7 @@ emit_tex(struct g9p_ctx *ctx, nir_tex_instr *tex)
    }
    return true;
 }
-
+#include "g9p_a9_intrinsics.h"
 static bool
 emit_intrinsic(struct g9p_ctx *ctx, nir_intrinsic_instr *intr)
 {
@@ -1605,7 +1605,7 @@ emit_intrinsic(struct g9p_ctx *ctx, nir_intrinsic_instr *intr)
       release(ctx, &intr->instr);
       return true;
    }
-
+   G9P_A9_INTRINSICS
    default:
       fprintf(stderr, "g9p: intrinsic %s not supported yet\n",
               nir_intrinsic_infos[intr->intrinsic].name);
@@ -2330,7 +2330,7 @@ g9p_compile_compute(nir_shader *nir, struct g9p_shader *out, void *mem_ctx)
    NIR_PASS(_, nir, nir_lower_compute_system_values, &csv);
    return compile_back(nir, out, MESA_SHADER_COMPUTE, NULL, 0, mem_ctx);
 }
-
+#include "g9p_a9_compute.h"
 /*
  * The fragment position as a varying: window coordinates from gl_Position
  * and the viewport (G9P_VIEWPORT buffer), written to varying @slot
