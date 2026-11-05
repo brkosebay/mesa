@@ -1550,7 +1550,7 @@ static unsigned load_offset(struct gctx *c, nir_intrinsic_instr *in, unsigned sr
 /* ---- register-indexed UBO loads (gles3-tex.md §3) ----
  * vkcube's `ubuf.attr[gl_VertexIndex]` is load_ubo(offset = (index << 4) +
  * C). Apple's compiler builds a pointer pair = buffer pointer + (index <<
- * shift) and loads from it (dynubo.metal v_cexpr/v_cbase), as Hendrik's A10
+ * shift) and loads from it (dynubo.metal v_cexpr/v_cbase), as Henrik's A10
  * compiler does for every buffer load. Here the pointer is the UBO's VA + C
  * (a loader upload), so the offset arithmetic folds away entirely. */
 static bool dyn_ubo_load(nir_intrinsic_instr *in)
@@ -3360,7 +3360,7 @@ static void emit_dyn_ubo(struct gctx *c, nir_intrinsic_instr *in)
    dyn_ubo_offset(in, &ix, &shift, &base);
    unsigned bytes = 4 * n;
    /* Witnessed: 16-byte loads (Apple's v_cexpr, vec4 elements at shift 4) and
-    * 4-byte loads (Hendrik's, at any byte offset); the shift field is
+    * 4-byte loads (Henrik's, at any byte offset); the shift field is
     * corpus-verified 0-4. vec2/vec3 (8-byte, 12-byte) loads are not. */
    if (in->def.bit_size != 32 || !((n == 4 && shift == 4) || (n == 1 && shift != 1)) || base % bytes)
       refuse(c, "load_ubo: register-indexed %u x %u-bit at shift %u, base %u (witnessed: vec4 at shift 4, "
