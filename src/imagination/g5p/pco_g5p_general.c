@@ -175,6 +175,8 @@ struct gctx {
    nir_def *discards[16]; /* demote_if/terminate_if conditions, emitted before the output */
    unsigned ndiscards;
    bool discard_always;
+   bool has_smask;
+   struct ref smask; /* deferred coverage feedback, after ordinary discards */
    int fragcoord;      /* dword of the raw X (Y at +1), -1 when unused */
    bool remat;         /* register-pressure retry: constants/uniforms re-read per use */
    bool count_pass;    /* round 19: first codegen pass only records register reads */
@@ -624,7 +626,7 @@ static bool plain_tex(const nir_tex_instr *t)
 
 static bool size_query(const nir_tex_instr *t)
 {
-   return t->op == nir_texop_txs || t->op == nir_texop_query_levels;
+   return t->op == nir_texop_txs || t->op == nir_texop_query_levels || t->op == nir_texop_texture_samples;
 }
 
 /* A constant offset in Apple's packed form ((x & 15) | (y & 15) << 4), or -1. */
@@ -644,20 +646,23 @@ static const char *tex_shape_refusal(const nir_tex_instr *t)
 {
    enum glsl_sampler_dim d = t->sampler_dim;
    nir_alu_type base = nir_alu_type_get_base_type(t->dest_type);
-   if (d != GLSL_SAMPLER_DIM_2D && d != GLSL_SAMPLER_DIM_3D && d != GLSL_SAMPLER_DIM_CUBE)
-      return "1D, buffer, rect, MS or subpass texture";
+   if (d != GLSL_SAMPLER_DIM_2D && d != GLSL_SAMPLER_DIM_3D && d != GLSL_SAMPLER_DIM_CUBE && d != GLSL_SAMPLER_DIM_MS)
+      return "1D, buffer, rect or subpass texture";
+   if (d == GLSL_SAMPLER_DIM_MS && (t->is_array || t->is_shadow ||
+       (t->op != nir_texop_txf_ms && !size_query(t))))
+      return "multisample texture: only non-array texelFetch/size/sample-count are witnessed";
    if (t->is_array && d != GLSL_SAMPLER_DIM_2D)
       return "cube or 3D array (A9 has no cube arrays)";
    if (base != nir_type_float && base != nir_type_int && base != nir_type_uint)
       return "result type";
    if (size_query(t)) {
       int l = nir_tex_instr_src_index(t, nir_tex_src_lod);
-      if (t->op == nir_texop_txs && (l < 0 || !nir_src_is_const(t->src[l].src)))
+      if (t->op == nir_texop_txs && d != GLSL_SAMPLER_DIM_MS && (l < 0 || !nir_src_is_const(t->src[l].src)))
          return "textureSize with a non-constant level";
       return NULL;
    }
    switch (t->op) {
-   case nir_texop_tex: case nir_texop_txb: case nir_texop_txl: case nir_texop_txd: case nir_texop_txf:
+   case nir_texop_tex: case nir_texop_txb: case nir_texop_txl: case nir_texop_txd: case nir_texop_txf: case nir_texop_txf_ms:
       break;
    default:
       return "texture op (not probed)";
@@ -694,7 +699,9 @@ static const char *tex_shape_refusal(const nir_tex_instr *t)
       case nir_tex_src_min_lod:
          return "texture source: min-LOD clamp (textureClampARB / SPIR-V MinLod; no Apple form decoded)";
       case nir_tex_src_ms_index:
-         return "texture source: sample index";
+         if (d != GLSL_SAMPLER_DIM_MS || t->op != nir_texop_txf_ms)
+            return "sample index on a non-multisample read";
+         break;
       case nir_tex_src_texture_offset: case nir_tex_src_sampler_offset:
          return "texture source: dynamically indexed sampler array";
       case nir_tex_src_texture_handle: case nir_tex_src_sampler_handle:
@@ -883,6 +890,9 @@ static void scan_cf(struct gctx *c, struct exec_list *list, struct unsupported *
                break;
             case nir_intrinsic_load_output:
                ok = !c->vs && c->key->logic_op_enable && in->def.num_components == 4;
+               break;
+            case nir_intrinsic_load_sample_id:
+               ok = !c->vs && c->key->samples == 4 && c->key->sample_frequency;
                break;
             case nir_intrinsic_load_frag_coord:
                ok = !c->vs;
@@ -1454,6 +1464,10 @@ static void liveness(struct gctx *c)
                bool now = c->eager_vout && base >= 0 && !(in == c->vend_store && k == c->vend_comp);
                struct ref r = resolve_value(c, in->src[0].ssa, k);
                mark(c, r, now ? (int)nir_def_instr(r.def)->index : LAST_END);
+            } else if (loc == FRAG_RESULT_SAMPLE_MASK && comp + k == 0 && c->key->samples == 4) {
+               c->smask = resolve_value(c, in->src[0].ssa, k);
+               c->has_smask = true;
+               mark(c, c->smask, DISCARD_AT);
             } else if (loc < FRAG_RESULT_DATA0 || !g5p_mrt_slot_is_attached(loc - FRAG_RESULT_DATA0, c->mrt.targets) ||
                        comp + k >= 4) {
                refuse(c, "store_output to %s", gl_frag_result_name(loc));
@@ -3484,6 +3498,16 @@ static void emit_intrinsic(struct gctx *c, nir_intrinsic_instr *in)
       return;
    }
    switch (in->intrinsic) {
+   case nir_intrinsic_load_sample_id: {
+      unsigned reg = alloc_run(c, 1, "sample ID");
+      put(c, raw, g5p_usc_sample_id(raw, 2 * reg), "sample ID special source");
+      struct val *v = V(c, &in->def, 0);
+      v->state = VAL_REG;
+      v->reg = reg;
+      v->held = true;
+      c->p->evidence |= PCO_G5P_EV_SAMPLE_ID;
+      break;
+   }
    case nir_intrinsic_load_output:
       emit_destination(c,in);break;
    case nir_intrinsic_load_input: /* VS: values were bound in setup_inputs() */
@@ -3621,7 +3645,7 @@ static void emit_size(struct gctx *c, nir_tex_instr *t)
    for (unsigned k = 0; k < t->def.num_components; k++) {
       struct val *v = V(c, &t->def, k);
       v->state = VAL_SHARED;
-      v->imm = common + (t->op == nir_texop_query_levels ? 3 : k);
+      v->imm = common + (t->op == nir_texop_query_levels || t->op == nir_texop_texture_samples ? 3 : k);
    }
    c->p->evidence |= PCO_G5P_EV_TEX_TYPES;
 }
@@ -3653,12 +3677,13 @@ static void emit_tex_ext(struct gctx *c, nir_tex_instr *t)
    uint8_t raw[G5P_USC_MAX];
    struct tex_bind *b = tex_for(c, t);
    enum glsl_sampler_dim sd = t->sampler_dim;
-   bool read = t->op == nir_texop_txf, array = t->is_array;
-   bool third = array || sd == GLSL_SAMPLER_DIM_3D || sd == GLSL_SAMPLER_DIM_CUBE;
+   bool ms = t->op == nir_texop_txf_ms;
+   bool read = t->op == nir_texop_txf || ms, array = t->is_array;
+   bool third = ms || array || sd == GLSL_SAMPLER_DIM_3D || sd == GLSL_SAMPLER_DIM_CUBE;
    int packed = packed_offset(t);
    struct g5p_tex_ext x = {
       .image_qword = b->image / 2, .sampler_qword = b->sampler / 2, .read = read,
-      .dim = sd == GLSL_SAMPLER_DIM_CUBE ? G5P_TEX_CUBE : sd == GLSL_SAMPLER_DIM_3D ? G5P_TEX_3D :
+      .dim = ms ? G5P_TEX_2D_MS : sd == GLSL_SAMPLER_DIM_CUBE ? G5P_TEX_CUBE : sd == GLSL_SAMPLER_DIM_3D ? G5P_TEX_3D :
              array ? G5P_TEX_2D_ARRAY : G5P_TEX_2D,
       .mask = t->is_shadow ? 1 : 0xf, .compare = t->is_shadow, .offset = packed >= 0,
    };
@@ -3680,6 +3705,10 @@ static void emit_tex_ext(struct gctx *c, nir_tex_instr *t)
       put(c, raw, g5p_usc_binary_literal(raw, G5P_BIN_FADD, 2 * tmp, 0x3800, 2 * tmp, 0, 1, 1, true, -1),
           "layer + 0.5");
       put(c, raw, g5p_usc_f2u16_half(raw, 2 * (block + 2), 2 * tmp, 1), "layer f32 -> u16");
+   } else if (ms) {
+      /* A9 f_ms0..3 and f_ms_uniform: xy u32, sample index in the
+       * next low half. Sample indices outside0..3 are undefined at API. */
+      move_into(c, block + 2, nir_get_tex_src(t, nir_tex_src_ms_index), 0, "sample index");
    } else if (third) {
       move_into(c, block + 2, cd, 2, array ? "array layer" : "texture coordinate z");
    }
@@ -3695,7 +3724,7 @@ static void emit_tex_ext(struct gctx *c, nir_tex_instr *t)
       move_into(c, g + 3, dy, 1, "dPdy.y");
       x.lod = G5P_TEX_LOD_GRAD;
       x.lod_dword = g;
-   } else if (read) {
+   } else if (read && !ms) {
       struct ref r = li >= 0 ? resolve_value(c, t->src[li].src.ssa, 0) : (struct ref){0};
       x.lod_dword = li >= 0 ? reg_of(c, r, "texel level") : zero_reg(c);
       if (li >= 0)
@@ -4208,6 +4237,22 @@ static void fs_output(struct gctx *c)
    if(c->key->logic_op_enable && (c->ndiscards || c->discard_always))
       refuse(c,"discard with logic framebuffer fetch is not qualified");
    fs_discards(c);
+   if (c->has_smask) {
+      if (c->blend != BLEND_NONE || c->key->logic_op_enable)
+         refuse(c, "sample-mask feedback with framebuffer reads is not qualified");
+      struct val *v = V(c, c->smask.def, c->smask.comp);
+      if (v->state == VAL_CONST) {
+         unsigned mask = v->imm & 15;
+         if (!mask)
+            put(c, raw, g5p_usc_discard(raw, -1), "coverage zero");
+         else if (mask != 15)
+            put(c, raw, g5p_usc_coverage_const(raw, mask), "coverage constant");
+      } else {
+         put(c, raw, g5p_usc_discard(raw, 2 * reg_of(c, c->smask, "sample mask")), "coverage register");
+      }
+      free_scratch(c);
+      c->p->evidence |= PCO_G5P_EV_COVERAGE;
+   }
    c->now = LAST_END;
    if (compact_output(c->key)) {
       struct pvr_g5p_dgl_source sources[8] = {0};
@@ -4711,8 +4756,39 @@ static bool lower_logic_store(nir_builder *b,nir_intrinsic_instr *in,void *data)
    return true;
 }
 
+static void apply_sample_mask(struct gctx *c, nir_shader *nir, const struct pco_g5p_fs_key *key)
+{
+   if (key->samples != 4)
+      return;
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   unsigned stores = 0;
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(ins, block) {
+         if (ins->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *in = nir_instr_as_intrinsic(ins);
+         if (in->intrinsic != nir_intrinsic_store_output ||
+             nir_intrinsic_io_semantics(in).location != FRAG_RESULT_SAMPLE_MASK)
+            continue;
+         if (++stores > 1 || ins->block->cf_node.parent->type != nir_cf_node_function ||
+             nir_intrinsic_component(in) != 0 || nir_intrinsic_write_mask(in) != 1)
+            refuse(c, "sample-mask output requires one unconditional scalar store");
+         nir_builder b = nir_builder_at(nir_before_instr(ins));
+         nir_src_rewrite(&in->src[0], nir_iand_imm(&b, nir_channel(&b, in->src[0].ssa, 0),
+                                                15 & ~key->smask_clear));
+      }
+   }
+   if (!stores && key->smask_clear) {
+      nir_builder b = nir_builder_at(nir_after_impl(impl));
+      nir_store_output(&b, nir_imm_int(&b, 15 & ~key->smask_clear), nir_imm_int(&b, 0),
+                       .base = 0, .component = 0, .write_mask = 1, .src_type = nir_type_uint32,
+                       .io_semantics = (nir_io_semantics){.location = FRAG_RESULT_SAMPLE_MASK, .num_slots = 1});
+   }
+}
+
 static void apply_fs_key(struct gctx *c, nir_shader *nir, const struct pco_g5p_fs_key *k)
 {
+   apply_sample_mask(c, nir, k);
    /* k->srgb: Apple's program is the linear one (ds-isa-state.md §2.2); the
     * gamma is PBE q1 bit 45 (gles3-tex.md §1.2), not a program change. */
    if (k->write_mask != 0xf && k->write_mask)

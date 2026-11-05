@@ -46,6 +46,7 @@
 #include "pvr_device.h"
 #include "pvr_framebuffer.h"
 #include "pvr_g5p.h"
+#include "pvr_g5p_dgl_probe.h"
 #include "pvr_g5p_blend.h"
 #include "pvr_g5p_formats.h"
 #include "pvr_g5p_mrt.h"
@@ -439,13 +440,25 @@ g5p_check_state(struct pvr_device *device, const VkGraphicsPipelineCreateInfo *c
    if (s->rs && (s->rs->line.mode != VK_LINE_RASTERIZATION_MODE_DEFAULT || s->rs->line.stipple.enable))
       return G5P_REFUSE(device, "line rasterization mode %d, stipple %d", s->rs->line.mode,
                         s->rs->line.stipple.enable);
+   /* Coverage is compiled into the fragment program, not dynamic ISP state.
+    * Zink's incomplete-DS3 path bakes these values into pipeline keys; a
+    * direct Vulkan dynamic-state request must not silently use stale values. */
+   if (BITSET_TEST(s->dynamic, MESA_VK_DYNAMIC_MS_SAMPLE_MASK) ||
+       BITSET_TEST(s->dynamic, MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES) ||
+       BITSET_TEST(s->dynamic, MESA_VK_DYNAMIC_MS_ALPHA_TO_COVERAGE_ENABLE) ||
+       BITSET_TEST(s->dynamic, MESA_VK_DYNAMIC_MS_ALPHA_TO_ONE_ENABLE))
+      return G5P_REFUSE(device, "dynamic multisample sample-mask/sample-count/alpha state is not implemented on G5P");
    /* 1 or 4 samples (pvr_g5p_msaa.c); sample shading, alpha to coverage and a partial sample mask need the
     * program's coverage feedback, which is not built */
    if (s->ms && ((s->ms->rasterization_samples != VK_SAMPLE_COUNT_1_BIT &&
                   s->ms->rasterization_samples != VK_SAMPLE_COUNT_4_BIT) ||
-                 s->ms->sample_shading_enable || s->ms->alpha_to_coverage_enable || s->ms->alpha_to_one_enable ||
-                 (s->ms->sample_mask & BITFIELD_MASK(s->ms->rasterization_samples)) !=
-                    BITFIELD_MASK(s->ms->rasterization_samples)))
+                 (s->ms->sample_shading_enable &&
+                  (!pvr_g5p_sample_shading_probe() || s->ms->rasterization_samples != 4 ||
+                   s->ms->min_sample_shading != 1.0f)) ||
+                 s->ms->alpha_to_coverage_enable || s->ms->alpha_to_one_enable ||
+                 ((!pvr_g5p_sample_mask_probe() || s->ms->rasterization_samples != 4) &&
+                  (s->ms->sample_mask & BITFIELD_MASK(s->ms->rasterization_samples)) !=
+                    BITFIELD_MASK(s->ms->rasterization_samples))))
       return G5P_REFUSE(device, "multisample state (1 or 4 samples, every sample, no sample shading or alpha to "
                         "coverage)");
    /* pvr_* gives a render pass without multiview the view mask 1 */
@@ -484,6 +497,14 @@ g5p_check_state(struct pvr_device *device, const VkGraphicsPipelineCreateInfo *c
    const char *why = pvr_arch_g5p_blend_fs_key(s, colors, key);
    if (why)
       return G5P_REFUSE(device, "colour blend state: %s", why);
+   if (s->ms && s->ms->rasterization_samples == 4 &&
+       (pvr_g5p_sample_mask_probe() || pvr_g5p_sample_shading_probe())) {
+      if (colors != 1 || ds || key->blend || key->logic_op_enable || key->write_mask != 15)
+         return G5P_REFUSE(device, "sample-mask qualifier requires one colour, no DS/blend, and a full colour mask");
+      key->samples = 4;
+      key->smask_clear = ~s->ms->sample_mask & 15;
+      key->sample_frequency = pvr_g5p_sample_shading_probe();
+   }
    if (vk_format_is_int(cf) && cf != VK_FORMAT_R32G32B32A32_UINT && cf != VK_FORMAT_R32G32B32A32_SINT)
       return G5P_REFUSE(device, "integer boundary qualification supports CLEAR only");
    if (key->logic_op_enable && ((cf != VK_FORMAT_R8G8B8A8_UNORM && cf != VK_FORMAT_B8G8R8A8_UNORM) ||
@@ -560,6 +581,8 @@ g5p_pipeline_build(struct pvr_device *device, const VkGraphicsPipelineCreateInfo
     * varyings it reads (Apple's VertexProgramKey; Rogue's pco_rev_link_nir) */
    if (!pvr_g5p_compile_stage(fs_info, true, g->samples, NULL, &key, NULL, fs))
       return G5P_REFUSE(device, "fragment shader: %s", fs->refusal);
+   if (key.sample_frequency && fs->num_varyings)
+      return G5P_REFUSE(device, "sample-frequency qualifier has no interpolated inputs");
    struct pco_g5p_vs_link link = { .valid = true };
    /* points (Apple's g3b-points): the point size after the position; the
     * topology class is fixed per pipeline even when the topology is dynamic */
@@ -625,7 +648,7 @@ g5p_pipeline_build(struct pvr_device *device, const VkGraphicsPipelineCreateInfo
    g->vs_outputs = vs->outputs;
    g->vs_id_mask = vs->id_mask;
    memcpy(g->vs_id_reg, vs->id_reg, sizeof(g->vs_id_reg));
-   g->fs_discard = (fs->evidence & PCO_G5P_EV_DISCARD) != 0;
+   g->fs_discard = (fs->evidence & (PCO_G5P_EV_DISCARD | PCO_G5P_EV_COVERAGE)) != 0;
    g->fs_blend_mode = fs->blend_mode;
    g->fs_write_mask = key.write_mask;
    g->color_targets = key.color_targets;

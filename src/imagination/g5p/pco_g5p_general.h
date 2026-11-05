@@ -70,6 +70,8 @@ enum pco_g5p_evidence {
    PCO_G5P_EV_COMMON_HIGH = 1u << 24, /* HOST: fragment common store past dword 63 (f_u80all, f_u256all) */
    PCO_G5P_EV_DERIV = 1u << 25,      /* HOST: dfdx/dfdy (f_ddx_*, f_ddy_*), fine or coarse unmeasured */
    PCO_G5P_EV_HIGH_REGS = 1u << 26,  /* HOST: homes above r31 (Henrik's moves; Apple's r32..r69 operands) */
+   PCO_G5P_EV_COVERAGE = 1u << 28,  /* A9 sample-mask feedback; bit27 belongs to fragment storage */
+   PCO_G5P_EV_SAMPLE_ID = 1u << 29, /* HOST: dedicated sample-ID input, runtime rate still probe-qualified */
 };
 
 /* Fragment program key (ds-isa-state.md §3.1, Apple FragmentProgramKey):
@@ -85,6 +87,9 @@ enum pco_g5p_color_output {
 };
 
 struct pco_g5p_fs_key {
+   uint8_t samples; /* 0/1 ordinary;4 enables the sample-mask qualification path */
+   uint8_t smask_clear; /* low4 bits cleared by static pSampleMask */
+   bool sample_frequency; /* narrow4x sample-ID qualification; no interpolated inputs */
    bool blend;
    bool logic_op_enable;
    uint8_t logic_op; /* VkLogicOp numbering, the 16 Boolean functions */

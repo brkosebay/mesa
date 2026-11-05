@@ -26,7 +26,7 @@ static const uint8_t convert_code[G5P_CONVERT_COUNT] = {0x60, 0x60, 0x68, 0x68, 
 static const uint8_t cmp_code[G5P_CMP_COUNT] = {0x59, 0x5d, 0x55, 0xbe, 0xbf, 0xb6, 0xb7, 0xbd};
 static const uint8_t sfu_code[G5P_SFU_COUNT] = {0x80, 0x81, 0x82, 0x86};
 static const uint8_t unary_code[G5P_UNARY_COUNT] = {0x40, 0x84, 0x85, 0xc5, 0xe8, 0xe4};
-static const uint8_t dim_code[G5P_TEX_DIM_COUNT] = {0xf5, 0xf7, 0xfb, 0xfd};
+static const uint8_t dim_code[G5P_TEX_CUBE + 1] = {0xf5, 0xf7, 0xfb, 0xfd};
 static const uint8_t mov_trailer[4] = {0x54, 0x01, 0x38, 0x00};
 
 /* Split immediate map (g5p_isa.IMM_MAP): bit -> (byte, bit). */
@@ -696,6 +696,16 @@ unsigned g5p_usc_mov_shared(uint8_t *out, unsigned dst_half, unsigned src_dword,
    return finish(out, raw, 12);
 }
 
+/* Independent f_id_mask compiler witness: the dedicated sample-ID source
+ * has selector0x19 and source-class extension0x10. Destination is an ordinary
+ * allocated low temporary; no complete compiler program is stored here. */
+unsigned g5p_usc_sample_id(uint8_t *out, unsigned dst_half)
+{
+   CHECK(half_register(dst_half, "sample ID destination must be an aligned low register"), g5p_usc_error);
+   uint8_t raw[12] = {0x98, 1, dst_half, 1, 0x19, 1, 0x10, 1, 0x54, 1, 0x38, 0};
+   return finish(out, raw, sizeof(raw));
+}
+
 /* ---- ISA round 2: inline shared sources (g5p_usc_resources.py) ---- */
 static unsigned alu_header(uint8_t *raw, unsigned cls, unsigned dst_half, unsigned bank, unsigned header,
                            unsigned source_extension, unsigned dst_control)
@@ -860,7 +870,7 @@ static unsigned texture_base(uint8_t *raw, const struct g5p_tex *t)
    CHECK(t->sampler_qword <= 32, "sampler_qword must be an integer in [0,32]");
    CHECK(t->coord_dword <= 31, "coord_dword must be an integer in [0,31]");
    CHECK(t->class_variant <= 1, "class_variant must be an integer in [0,1]");
-   CHECK(t->dim < G5P_TEX_DIM_COUNT, "unmeasured texture dimension");
+   CHECK(t->dim <= G5P_TEX_CUBE, "multisample reads require the explicit sample-index form");
    CHECK(!t->read || t->dim == G5P_TEX_2D, "only 2d read has been isolated");
    raw[0] = 0x1a | t->class_variant;
    raw[1] = dim_code[t->dim];
@@ -932,7 +942,7 @@ unsigned g5p_usc_gather(uint8_t *out, const struct g5p_tex *t)
 
 unsigned g5p_usc_sample_ext(uint8_t *out, const struct g5p_tex_ext *t)
 {
-   static const uint8_t dim_low[G5P_TEX_DIM_COUNT] = {0x5, 0x7, 0xb, 0xd};
+   static const uint8_t dim_low[G5P_TEX_DIM_COUNT] = {0x5, 0x7, 0xb, 0xd, 0x9};
    static const uint8_t lod_mode[] = {0, 0x40, 0x20, 0x60};
    CHECK(half_register(t->dst_half, "dst_half requires a measured 32-bit aligned half index"), g5p_usc_error);
    CHECK(t->image_qword <= 28 && !(t->image_qword & 3), "image_qword must be a four-qword base in [0,28]");
@@ -940,7 +950,10 @@ unsigned g5p_usc_sample_ext(uint8_t *out, const struct g5p_tex_ext *t)
    CHECK(t->coord_dword <= 31 && t->lod_dword <= 31 && t->extras_half <= 63, "operand beyond r31");
    CHECK(t->dim < G5P_TEX_DIM_COUNT, "unmeasured texture dimension");
    CHECK(t->mask == 0xf || (t->mask == 1 && t->compare), "only rgba and compare results are measured");
-   CHECK(!t->read || (!t->compare && !t->offset && t->lod == G5P_TEX_LOD_LEVEL && t->dim != G5P_TEX_CUBE),
+   CHECK(t->dim != G5P_TEX_2D_MS || (t->read && !t->lod && !t->compare && !t->offset),
+         "multisample read has integer xy + sample index, no level or sampler extras");
+   CHECK(!t->read || (!t->compare && !t->offset &&
+         (t->lod == G5P_TEX_LOD_LEVEL || t->dim == G5P_TEX_2D_MS) && t->dim != G5P_TEX_CUBE),
          "read takes a level and no compare/offset (cube reads are refused by Apple)");
    CHECK(t->lod != G5P_TEX_LOD_GRAD || t->dim == G5P_TEX_2D || t->dim == G5P_TEX_2D_ARRAY,
          "gradients are measured on 2D and 2D arrays only");
@@ -1206,6 +1219,16 @@ unsigned g5p_usc_discard_test(uint8_t *out, enum g5p_cmp op, unsigned dst_half, 
       raw[n++] = relation_control;
    }
    return finish(out, raw, n);
+}
+
+/* g3b-samplemask and independent mask0/1/2/5/15/dynamic compiler witnesses:
+ * the feedback operand is a half register; bit3 selects the constant bank.
+ * No program array is embedded. */
+unsigned g5p_usc_coverage_const(uint8_t *out, unsigned mask)
+{
+   CHECK(mask > 0 && mask <= 15, "coverage constant must be1..15");
+   uint8_t raw[4] = {4, 0x69, 2 * mask, 0};
+   return finish(out, raw, sizeof(raw));
 }
 
 unsigned g5p_usc_discard(uint8_t *out, int src_half)

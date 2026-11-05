@@ -41,6 +41,8 @@
 /* The image-state key's fields */
 #define PVR_G5P_TEX_LAYOUT_2D 2u
 #define PVR_G5P_TEX_LAYOUT_2D_ARRAY 3u
+#define PVR_G5P_TEX_LAYOUT_2D_MS 4u
+#define PVR_G5P_TEX_MSAA4_BIT 55u
 #define PVR_G5P_TEX_LAYOUT_3D 5u
 #define PVR_G5P_TEX_LAYOUT_CUBE 6u
 #define PVR_G5P_TEX_TWIDDLED 8u
@@ -280,7 +282,8 @@ pvr_g5p_tex_size(const uint32_t state[4], unsigned level, uint32_t out[4])
       out[2] = 1;
       break;
    }
-   out[3] = twiddled ? (unsigned)(q1 & 0xf) - base + 1 : 1;
+   out[3] = layout == PVR_G5P_TEX_LAYOUT_2D_MS ? 4 :
+            twiddled ? (unsigned)(q1 & 0xf) - base + 1 : 1;
    return true;
 }
 

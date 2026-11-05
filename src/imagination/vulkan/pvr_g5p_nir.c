@@ -417,7 +417,7 @@ xfb_captures(const nir_shader *nir, gl_varying_slot slot)
 
 /* The graphics lowerings of a prepared stage (the ICD's graphics_nir()) */
 static nir_shader *
-graphics_lower(nir_shader *nir, unsigned color_targets, bool *sample_mask, bool point_size)
+graphics_lower(nir_shader *nir, unsigned color_targets, bool *sample_mask, bool point_size, unsigned samples)
 {
    const mesa_shader_stage stage = nir ? nir->info.stage : MESA_SHADER_NONE;
 
@@ -444,7 +444,7 @@ graphics_lower(nir_shader *nir, unsigned color_targets, bool *sample_mask, bool 
       nir_opt_dce(nir);
       nir_index_ssa_defs(nir_shader_get_entrypoint(nir));
    }
-   if (nir && stage == MESA_SHADER_FRAGMENT &&
+   if (nir && stage == MESA_SHADER_FRAGMENT && samples <= 1 &&
        nir_shader_intrinsics_pass(nir, lower_sample_mask_1x, nir_metadata_control_flow, sample_mask)) {
       nir->info.outputs_written &= ~BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK);
       BITSET_CLEAR(nir->info.system_values_read, SYSTEM_VALUE_SAMPLE_MASK_IN);
@@ -458,9 +458,9 @@ graphics_lower(nir_shader *nir, unsigned color_targets, bool *sample_mask, bool 
 
 static nir_shader *
 graphics_nir(const uint32_t *spv, size_t words, mesa_shader_stage stage, const char *entry, unsigned color_targets,
-             bool *sample_mask, bool point_size)
+             bool *sample_mask, bool point_size, unsigned samples)
 {
-   return graphics_lower(g5p_nir(spv, words, stage, entry), color_targets, sample_mask, point_size);
+   return graphics_lower(g5p_nir(spv, words, stage, entry), color_targets, sample_mask, point_size, samples);
 }
 
 /* Vertex system values: the hardware index the PDS writes is the draw's
@@ -605,8 +605,8 @@ compile_stage(const VkPipelineShaderStageCreateInfo *stage_info, bool half_outpu
    bool sample_mask = false;
    const bool point_size = stage == MESA_SHADER_VERTEX && link && link->point_size;
    nir_shader *nir = internal ? graphics_lower(g5p_nir_prepare(nir_shader_clone(NULL, internal)), color_targets,
-                                               &sample_mask, point_size)
-                              : graphics_nir(spv, bytes / 4, stage, entry, color_targets, &sample_mask, point_size);
+                                               &sample_mask, point_size, samples)
+                              : graphics_nir(spv, bytes / 4, stage, entry, color_targets, &sample_mask, point_size, samples);
    bool ok = false;
    if (!nir) {
       snprintf(out->refusal, sizeof(out->refusal), "SPIR-V -> NIR failed");
@@ -697,7 +697,7 @@ g5p_compile_load_type(struct pco_g5p_program *out, unsigned raw, unsigned mrt_ta
    }
 
    bool sample_mask = false; /* the load program reads no sample mask */
-   nir_shader *nir = graphics_lower(g5p_nir_prepare(b.shader), targets, &sample_mask, false);
+   nir_shader *nir = graphics_lower(g5p_nir_prepare(b.shader), targets, &sample_mask, false, 1);
    /* Apple's source groups, as every pipeline's fragment program (g5p_check_state()): 1 only on a register's last
     * read. The default, 1 on every read, returns a wrong value on a re-read: the LOAD probe's texelFetch wrote only
     * output component 0 (B G R A = 0 0 R 0). */

@@ -38,7 +38,7 @@ enum g5p_small_format {
    G5P_SMALL_FORMAT_COUNT
 };
 enum g5p_unary { G5P_FLOOR, G5P_LOG2, G5P_EXP2, G5P_NOT, G5P_POPCOUNT, G5P_BITREVERSE, G5P_UNARY_COUNT };
-enum g5p_tex_dim { G5P_TEX_2D, G5P_TEX_2D_ARRAY, G5P_TEX_3D, G5P_TEX_CUBE, G5P_TEX_DIM_COUNT };
+enum g5p_tex_dim { G5P_TEX_2D, G5P_TEX_2D_ARRAY, G5P_TEX_3D, G5P_TEX_CUBE, G5P_TEX_2D_MS, G5P_TEX_DIM_COUNT };
 /* ISA round 2 (isa-g5p.md "ISA round 2"): compare/write relations, SFU
  * cores and the literal kinds of encode_binary_literal. */
 enum g5p_cmp { G5P_FLT, G5P_FGT, G5P_FEQ, G5P_ILT, G5P_IGT, G5P_ULT, G5P_UGT, G5P_IEQ, G5P_CMP_COUNT };
@@ -131,6 +131,8 @@ unsigned g5p_usc_wait(uint8_t *out, unsigned control);
 /* Resources (g5p_usc_resources.py). bank 1 = the VS temp destination
  * (ISA round 2). */
 unsigned g5p_usc_mov_shared(uint8_t *out, unsigned dst_half, unsigned src_dword, unsigned bank);
+/* Dedicated A9 sample-ID special source, not an interpolated coefficient. */
+unsigned g5p_usc_sample_id(uint8_t *out, unsigned dst_half);
 
 struct g5p_tex {
    unsigned dst_half, image_qword, sampler_qword, coord_dword;
@@ -255,6 +257,8 @@ unsigned g5p_usc_square(uint8_t *out, unsigned dst_half, struct g5p_src s, struc
 unsigned g5p_usc_discard_test(uint8_t *out, enum g5p_cmp op, unsigned dst_half, struct g5p_src a,
                               struct g5p_src b, unsigned relation_control);
 unsigned g5p_usc_discard(uint8_t *out, int src_half);
+/* A9 coverage feedback from the integer constant bank, mask1..15. */
+unsigned g5p_usc_coverage_const(uint8_t *out, unsigned mask);
 struct g5p_lit3 {
    unsigned opcode, dst_half;
    uint32_t value;

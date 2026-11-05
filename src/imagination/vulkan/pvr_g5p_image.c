@@ -43,6 +43,7 @@
 #include "vk_physical_device.h"
 
 #include "pvr_g5p_ds.h"
+#include "pvr_g5p_dgl_probe.h"
 #include "pvr_g5p_msaa.h"
 #include "pvr_g5p_tex.h"
 #include "pvr_image.h"
@@ -155,7 +156,7 @@ pvr_g5p_msaa_limits(struct pvr_physical_device *pdevice, struct vk_properties *p
    p->framebufferStencilSampleCounts = fb;
    p->framebufferNoAttachmentsSampleCounts = fb;
    p->framebufferIntegerColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
-   p->sampledImageColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+   p->sampledImageColorSampleCounts = pvr_g5p_ms_texture_probe() ? fb : VK_SAMPLE_COUNT_1_BIT;
    p->sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT;
    p->sampledImageDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT;
    p->sampledImageStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT;
@@ -174,14 +175,19 @@ pvr_g5p_msaa_image_samples(struct pvr_physical_device *pdevice, const VkPhysical
                            VkImageTiling tiling, VkImageFormatProperties *props)
 {
    const VkImageUsageFlags attach = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-   const VkImageUsageFlags read = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
-                                  VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+   const bool ms_read = pvr_g5p_ms_texture_probe() && !vk_format_is_depth_or_stencil(info->format) &&
+                        (info->usage & VK_IMAGE_USAGE_SAMPLED_BIT);
+   /* Zink includes INPUT_ATTACHMENT in colour texture allocation usage.
+    * It does not change the surface layout; MS subpass shaders remain
+    * explicitly refused by the compiler, outside this sampled-read probe. */
+   const VkImageUsageFlags read = VK_IMAGE_USAGE_STORAGE_BIT |
+      (ms_read ? 0 : VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
    const bool format_ok = pvr_g5p_ds_format(info->format) ||
                           (vk_format_is_color(info->format) && !vk_format_is_compressed(info->format) &&
                            !vk_format_is_int(info->format) && vk_format_get_blocksize(info->format) == 4);
    const bool four = pvr_g5p_winsys_msaa(pdevice->ws) && tiling == VK_IMAGE_TILING_OPTIMAL &&
                      info->type == VK_IMAGE_TYPE_2D && !(info->flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) &&
-                     (info->usage & attach) && !(info->usage & read) && format_ok;
+                     ((info->usage & attach) || ms_read) && !(info->usage & read) && format_ok;
 
    props->sampleCounts &= four ? VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT : VK_SAMPLE_COUNT_1_BIT;
 }

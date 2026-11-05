@@ -22,6 +22,8 @@
 #include "pvr_common.h"
 #include "pvr_g5p_tex.h" /* pvr_macros.h: PVR_PER_ARCH, before pvr_g5p_ds.h */
 #include "pvr_g5p_ds.h"
+#include "pvr_g5p_dgl_probe.h"
+#include "pvr_g5p_msaa.h"
 #include "pvr_g5p_formats.h"
 #include "pvr_g5p_tex_encode.h"
 #include "pvr_image.h"
@@ -50,6 +52,27 @@ g5p_view_state(const struct pvr_image_view *iview, uint64_t q[3])
       return "format without a texture key";
 
    const uint32_t key = pvr_g5p_tex_swizzle_key(f->key, &iview->vk.swizzle);
+
+   if (image->vk.samples != VK_SAMPLE_COUNT_1_BIT) {
+      if (!pvr_g5p_ms_texture_probe() || image->vk.samples != VK_SAMPLE_COUNT_4_BIT ||
+          iview->vk.view_type != VK_IMAGE_VIEW_TYPE_2D || image->vk.array_layers != 1 ||
+          image->vk.mip_levels != 1 || iview->vk.base_mip_level || vk_format_is_int(iview->vk.format) ||
+          vk_format_get_blocksize(iview->vk.format) != 4)
+         return "multisample sampled view outside the four-sample colour probe";
+      /* A9 ImageStateFields0x207d17ac4: layout4, twiddled,
+       * sample-count4 at q0[55]; existing PBE store interleaves four samples. */
+      struct pvr_g5p_tex_twiddled_view v = {
+         .key = key, .layout = PVR_G5P_TEX_LAYOUT_2D_MS,
+         .width = image->vk.extent.width, .height = image->vk.extent.height,
+         .depth = 1, .level_count = 1, .srgb = f->srgb,
+         .va = image->dev_addr.addr + plane->offset,
+         .big_layer = pvr_g5p_msaa_layout(image->vk.extent.width, image->vk.extent.height, 4) >=
+                      PVR_G5P_TEX_BIG_LAYER,
+      };
+      pvr_g5p_tex_twiddled(q, &v);
+      q[0] |= 1ull << PVR_G5P_TEX_MSAA4_BIT;
+      return NULL;
+   }
 
    if (image->memlayout == PVR_MEMLAYOUT_LINEAR) {
       const struct pvr_mip_level *level = &plane->mip_levels[0];
