@@ -205,6 +205,8 @@ pvr_g5p_vertex_buffer_format(VkFormat vk_format)
     * mask into the fragment program, and Zink makes them dynamic whenever \
     * they exist. */ \
    if (PVR_HAS_FEATURE(&pdevice->dev_info, apple_g5p)) { \
+      supported_features.logicOp = false; \
+      supported_features.sampleRateShading = false; \
       supported_features.geometryStreams = false; \
       supported_properties.transformFeedbackDraw = false; \
       supported_properties.transformFeedbackQueries = true; \

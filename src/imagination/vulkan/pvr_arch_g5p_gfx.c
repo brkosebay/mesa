@@ -782,6 +782,11 @@ PVR_PER_ARCH(g5p_graphics_pipeline_compile)(struct pvr_device *device,
                                             struct pvr_graphics_pipeline *pipeline,
                                             const struct vk_graphics_pipeline_state *vk_state)
 {
+   /* Reject before compiling/uploading any shader or allocating a G5P
+    * pipeline. A version string is not geometry-stage support. */
+   for (uint32_t i = 0; i < create_info->stageCount; i++)
+      if (create_info->pStages[i].stage == VK_SHADER_STAGE_GEOMETRY_BIT)
+         return G5P_REFUSE(device, "geometry shader stage is not implemented on G5P");
    struct pco_g5p_program vs = { 0 }, fs = { 0 };
    struct pvr_g5p_pipeline *g =
       vk_zalloc(&device->vk.alloc, sizeof(*g), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
