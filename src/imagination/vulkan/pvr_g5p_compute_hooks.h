@@ -3,6 +3,11 @@
 #define PVR_G5P_COMPUTE_HOOKS_H
 #if defined(PVR_APPLE_G5P)
 #   include "pvr_g5p_compute.h"
+/* Typed G5P contexts recover in the kernel. The empty Rogue reset framework
+ * has a BVNC compute precondition that does not describe the native A9 CDM. */
+#   define PVR_G5P_HOOK_ctx_reset_cmd_init()                  \
+      if (PVR_HAS_FEATURE(dev_info, apple_g5p))              \
+         return VK_SUCCESS;
 #   define PVR_G5P_HOOK_compute_pipeline()                                 \
       if (PVR_HAS_FEATURE(&device->pdevice->dev_info, apple_g5p)) {        \
          result = pvr_arch_g5p_compute_pipeline_compile(device,            \
