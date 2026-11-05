@@ -1913,3 +1913,23 @@ unsigned g5p_usc_alu2_wide(uint8_t *out, unsigned op, unsigned dst, unsigned a, 
    const uint16_t w[] = {0x0199, 0x0100 | 2 * dst, srcs | 1, 0x0100 | (a >> 5) << 1 | (b >> 5) << 9, op};
    return put_words(out, w, 5);
 }
+
+/* Fragment stores, from offline host compiles of fragment SSBO stores:
+ * unlike the class-10 compute/vertex store, a fragment program writes
+ * through the pixel side-effect port (class 70/71) after the
+ * active-fragment predicate. */
+unsigned g5p_usc_fs_store_predicate(uint8_t *out)
+{
+   const uint16_t w[] = { 0x0182, 0x0101, 0x0120, 0x0129, 0x0110, 0xa1bd, 0x00b0 };
+   return put_words(out, w, 7);
+}
+
+unsigned g5p_usc_fs_store(uint8_t *out, unsigned bytes, unsigned data_half, unsigned addr_half, unsigned slot)
+{
+   CHECK(bytes == 4 || bytes == 8 || bytes == 16, "fragment stores:4/8/16bytes witnessed");
+   CHECK(data_half < 64 && !(data_half & 1) && addr_half < 62 && !(addr_half & 3) && slot <= 1,
+         "fragment store register/slot fields");
+   unsigned size = bytes == 4 ? 4 : bytes == 8 ? 5 : 7;
+   const uint16_t w[] = { size << 11 | 0x0370 | slot, 0x0080 | data_half | addr_half << 9 };
+   return put_words(out, w, 2);
+}

@@ -397,6 +397,11 @@ unsigned g5p_usc_address_add(uint8_t *out, unsigned dst_half, unsigned ptr_dword
  * v_st_bytes, 2 in v_st_stride12, 3 in v_st_off12):
  * `10 (0x23+8(n-1)) (0x80|data_half) (addr_half<<1|1) OO 88`.
  * Vertex tasks commit only the 4-byte form (xfb.md, device run 2). */
+/* The fragment store: the active-fragment predicate, then the class 70/71
+ * pixel side-effect store (helper lanes do not store: hardware, a 31x29
+ * target's every word exact with the ISP scissor at the attachment). */
+unsigned g5p_usc_fs_store_predicate(uint8_t *out);
+unsigned g5p_usc_fs_store(uint8_t *out, unsigned bytes, unsigned data_half, unsigned addr_half, unsigned slot);
 unsigned g5p_usc_global_store(uint8_t *out, unsigned bytes, unsigned data_half, unsigned addr_half,
                               unsigned dword_offset);
 /* Vertex integer add of a literal: short prefix + `a1 09 70 00` up to 0xffff
