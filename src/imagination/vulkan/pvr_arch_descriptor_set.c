@@ -239,7 +239,7 @@ write_buffer_view(const struct pvr_descriptor_set *set,
    VK_FROM_HANDLE(pvr_buffer_view, buffer_view, _buffer_view);
    struct pvr_image_descriptor buffer_view_state = buffer_view->image_state;
 
-   if (is_texel_buffer &&
+   if (is_texel_buffer && !PVR_G5P_NATIVE_STORAGE(dev_info) &&
        !PVR_HAS_FEATURE(dev_info, tpu_extended_integer_lookup)) {
       struct ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1 word1;
       ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1_unpack(&buffer_view_state.words[1],
