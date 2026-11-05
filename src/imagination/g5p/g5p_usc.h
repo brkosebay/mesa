@@ -285,6 +285,7 @@ unsigned g5p_usc_half_binary(uint8_t *out, bool mul, unsigned dst_half, struct g
 unsigned g5p_usc_half_fma(uint8_t *out, unsigned dst_half, struct g5p_src a, struct g5p_src b,
                           struct g5p_src c, struct g5p_ctl k, unsigned source_control);
 unsigned g5p_usc_half_one_minus(uint8_t *out, unsigned dst_half, unsigned src_half);
+unsigned g5p_usc_tile_to_f32(uint8_t *out, unsigned dst_half, unsigned src_half);
 unsigned g5p_usc_tile_component(uint8_t *out, unsigned dst_half, unsigned src_half);
 
 /* Native-f16 blend-epilogue forms of Apple's 45 blend probes (one Metal

@@ -86,6 +86,8 @@ enum pco_g5p_color_output {
 
 struct pco_g5p_fs_key {
    bool blend;
+   bool logic_op_enable;
+   uint8_t logic_op; /* VkLogicOp numbering, the 16 Boolean functions */
    uint8_t src_rgb, dst_rgb, src_a, dst_a, op_rgb, op_a;
    uint8_t write_mask; /* VkColorComponentFlags; 0xf = all */
    bool srgb;          /* _AGCDrawBuffer.gammaCorrection (bit location unmeasured: refused) */

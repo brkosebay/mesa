@@ -11,6 +11,7 @@
 #include "pco_g5p_general.h"
 #include "pvr_csb.h"
 #include "pvr_g5p_blend.h"
+#include "pvr_g5p_dgl_probe.h"
 
 /*
  * Blending and the write mask compile into the fragment program (the
@@ -35,8 +36,10 @@ PVR_PER_ARCH(g5p_blend_fs_key)(const struct vk_graphics_pipeline_state *state, u
    key->color_targets = targets > 1 ? targets : 0;
    if (!cb)
       return NULL;
-   if (cb->logic_op_enable)
-      return "logic op";
+   if (cb->logic_op_enable) {
+      if(!pvr_g5p_logic_probe() || targets!=1)return "logic op qualifier requires one target and probe admission";
+      key->logic_op_enable=true;key->logic_op=cb->logic_op;
+   }
    if (cb->attachment_count != targets)
       return "colour blend attachments other than the render pass's colour attachments";
    if (BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_CB_BLEND_ENABLES) ||
@@ -56,8 +59,8 @@ PVR_PER_ARCH(g5p_blend_fs_key)(const struct vk_graphics_pipeline_state *state, u
    const struct vk_color_blend_attachment_state *a = &cb->attachments[0];
 
    key->write_mask = (cb->color_write_enables & 1) ? a->write_mask : 0;
-   key->blend = a->blend_enable;
-   if (a->blend_enable) {
+   key->blend = a->blend_enable && !key->logic_op_enable;
+   if (key->blend) {
       key->src_rgb = a->src_color_blend_factor;
       key->dst_rgb = a->dst_color_blend_factor;
       key->src_a = a->src_alpha_blend_factor;

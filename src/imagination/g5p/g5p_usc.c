@@ -275,6 +275,22 @@ unsigned g5p_usc_fadd_literal_mods(uint8_t *out, unsigned dst_half, uint16_t val
    return finish(out, raw, n);
 }
 
+/* A9 framebuffer fetch into float32: saturating (-0.0h + tile_half).
+ * Independent color-input bitcast probes witness every input channel;
+ * opcode46 and source-half control0xd produce the API-normalized f32.
+ */
+unsigned g5p_usc_tile_to_f32(uint8_t *out, unsigned dst_half, unsigned src_half)
+{
+   CHECK(dst_half <= 62 && !(dst_half & 1) && src_half <= 63,"tile float conversion register bounds");
+   uint8_t raw[G5P_USC_MAX];
+   unsigned n=literal_prefix(raw,0x99,dst_half,0,0x8000,src_half,1,1,0);
+   if (!n) return 0;
+   raw[n++]=binop_code[G5P_BIN_FADD]|2;
+   raw[n++]=0x0d; /* F16 literal and F16 source, full-width result */
+   raw[n++]=0x70;raw[n++]=0;
+   return finish(out,raw,n);
+}
+
 unsigned g5p_usc_binary_literal(uint8_t *out, enum g5p_binop op, unsigned dst_half,
                                 uint32_t value, unsigned b_half, unsigned bank,
                                 unsigned b_group, unsigned header, bool f16, int long_form)

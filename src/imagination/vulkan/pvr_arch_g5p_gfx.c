@@ -486,6 +486,9 @@ g5p_check_state(struct pvr_device *device, const VkGraphicsPipelineCreateInfo *c
       return G5P_REFUSE(device, "colour blend state: %s", why);
    if (vk_format_is_int(cf) && cf != VK_FORMAT_R32G32B32A32_UINT && cf != VK_FORMAT_R32G32B32A32_SINT)
       return G5P_REFUSE(device, "integer boundary qualification supports CLEAR only");
+   if (key->logic_op_enable && ((cf != VK_FORMAT_R8G8B8A8_UNORM && cf != VK_FORMAT_B8G8R8A8_UNORM) ||
+                                 (s->ms && s->ms->rasterization_samples != 1)))
+      return G5P_REFUSE(device,"logic qualifier supports single-sample RGBA8/BGRA8 UNORM only");
    if (colors > 4)
       key->color_output = cf == VK_FORMAT_B8G8R8A8_UNORM ? PCO_G5P_COLOR_PACKED_BGRA8 : PCO_G5P_COLOR_PACKED_RGBA8;
    if (cf == VK_FORMAT_R32G32B32A32_UINT)

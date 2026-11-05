@@ -12,4 +12,9 @@ static inline bool pvr_g5p_mrt8_probe(void)
    const char *v = getenv("PVR_G5P_MRT8");
    return v && !strcmp(v, "probe");
 }
+static inline bool pvr_g5p_logic_probe(void)
+{
+   const char *v=getenv("PVR_G5P_LOGIC_OP");
+   return v && !strcmp(v,"probe");
+}
 #endif

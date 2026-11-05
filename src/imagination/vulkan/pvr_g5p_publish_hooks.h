@@ -206,7 +206,7 @@ pvr_g5p_vertex_buffer_format(VkFormat vk_format)
     * mask into the fragment program, and Zink makes them dynamic whenever \
     * they exist. */ \
    if (PVR_HAS_FEATURE(&pdevice->dev_info, apple_g5p)) { \
-      supported_features.logicOp = false; \
+      supported_features.logicOp = pvr_g5p_logic_probe(); \
       supported_features.sampleRateShading = false; \
       if (pvr_g5p_mrt8_probe()) { \
          supported_properties.maxColorAttachments = 8; \

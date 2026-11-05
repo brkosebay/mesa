@@ -881,6 +881,9 @@ static void scan_cf(struct gctx *c, struct exec_list *list, struct unsupported *
             case nir_intrinsic_terminate_if:
                ok = !c->vs;
                break;
+            case nir_intrinsic_load_output:
+               ok = !c->vs && c->key->logic_op_enable && in->def.num_components == 4;
+               break;
             case nir_intrinsic_load_frag_coord:
                ok = !c->vs;
                nir_foreach_use(use, &in->def) {
@@ -3454,6 +3457,25 @@ static void emit_deriv(struct gctx *c, nir_intrinsic_instr *in)
    define(c, &in->def, dst);
 }
 
+static void emit_destination(struct gctx *c, nir_intrinsic_instr *in)
+{
+   if (c->vs || !c->key->logic_op_enable || in->def.num_components != 4 ||
+       nir_intrinsic_io_semantics(in).location != FRAG_RESULT_DATA0)
+      refuse(c,"framebuffer fetch outside the single UNORM8 logic qualifier");
+   const unsigned tile=alloc_run(c,2,"logic tile words");
+   const unsigned dst=alloc_run(c,4,"logic destination floats");
+   uint8_t raw[G5P_USC_MAX];
+   put(c,raw,g5p_usc_tile_read(raw,2*tile,2),"logic tile read");
+   put(c,raw,g5p_usc_wait(raw,0),"logic tile wait");
+   for (unsigned k=0;k<4;k++) {
+      put(c,raw,g5p_usc_tile_to_f32(raw,2*(dst+k),2*tile+k),"logic destination f32");
+      struct val *v=V(c,&in->def,k);
+      v->state=VAL_REG;v->reg=dst+k;v->held=true;
+   }
+   c->busy &= ~BITFIELD_RANGE(tile,2);
+   c->p->evidence |= PCO_G5P_EV_BLEND;
+}
+
 static void emit_intrinsic(struct gctx *c, nir_intrinsic_instr *in)
 {
    uint8_t raw[G5P_USC_MAX];
@@ -3462,6 +3484,8 @@ static void emit_intrinsic(struct gctx *c, nir_intrinsic_instr *in)
       return;
    }
    switch (in->intrinsic) {
+   case nir_intrinsic_load_output:
+      emit_destination(c,in);break;
    case nir_intrinsic_load_input: /* VS: values were bound in setup_inputs() */
    case nir_intrinsic_load_interpolated_input:
       /* FS: bound in hoist_iterators(), or read here on the pressure retry. */
@@ -4181,6 +4205,8 @@ static void fs_output(struct gctx *c)
 {
    uint8_t raw[G5P_USC_MAX];
    c->now = DISCARD_AT;
+   if(c->key->logic_op_enable && (c->ndiscards || c->discard_always))
+      refuse(c,"discard with logic framebuffer fetch is not qualified");
    fs_discards(c);
    c->now = LAST_END;
    if (compact_output(c->key)) {
@@ -4642,6 +4668,46 @@ static bool rewrite_output(nir_builder *b, nir_intrinsic_instr *in, void *data)
                    nir_fmul(b, nir_channel(b, v, 2), alpha), alpha);
    }
    nir_src_rewrite(&in->src[0], v);
+   return true;
+}
+
+struct logic_lower { const struct pco_g5p_fs_key *key; bool partial; };
+static bool lower_logic_store(nir_builder *b,nir_intrinsic_instr *in,void *data)
+{
+   struct logic_lower *l=data;
+   if (in->intrinsic != nir_intrinsic_store_output) return false;
+   if (in->num_components != 4 || nir_intrinsic_component(in) || nir_intrinsic_write_mask(in) != 15) {
+      l->partial=true;return false;
+   }
+   b->cursor=nir_before_instr(&in->instr);
+   nir_def *dst=nir_load_output(b,4,32,nir_imm_int(b,0),.base=0,.dest_type=nir_type_float32,
+      .io_semantics=(nir_io_semantics){.location=FRAG_RESULT_DATA0,.num_slots=1,.fb_fetch_output=true});
+   nir_def *src=in->src[0].ssa;
+   nir_def *a=nir_f2u32(b,nir_fround_even(b,nir_fmul_imm(b,nir_fsat(b,src),255.0f)));
+   nir_def *d=nir_f2u32(b,nir_fround_even(b,nir_fmul_imm(b,nir_fsat(b,dst),255.0f)));
+   nir_def *r;
+   switch (l->key->logic_op) {
+   case 0:r=nir_imm_ivec4(b,0,0,0,0);break;
+   case 1:r=nir_iand(b,a,d);break;
+   case 2:r=nir_iand(b,a,nir_inot(b,d));break;
+   case 3:r=a;break;
+   case 4:r=nir_iand(b,nir_inot(b,a),d);break;
+   case 5:r=d;break;
+   case 6:r=nir_ixor(b,a,d);break;
+   case 7:r=nir_ior(b,a,d);break;
+   case 8:r=nir_inot(b,nir_ior(b,a,d));break;
+   case 9:r=nir_inot(b,nir_ixor(b,a,d));break;
+   case 10:r=nir_inot(b,d);break;
+   case 11:r=nir_ior(b,a,nir_inot(b,d));break;
+   case 12:r=nir_inot(b,a);break;
+   case 13:r=nir_ior(b,nir_inot(b,a),d);break;
+   case 14:r=nir_inot(b,nir_iand(b,a,d));break;
+   default:r=nir_imm_ivec4(b,255,255,255,255);break;
+   }
+   r=nir_fmul_imm(b,nir_u2f32(b,nir_iand_imm(b,r,255)),1.0f/255.0f);
+   nir_def *v[4];
+   for(unsigned k=0;k<4;k++)v[k]=nir_channel(b,(l->key->write_mask&(1u<<k))?r:dst,k);
+   nir_src_rewrite(&in->src[0],nir_vec(b,v,4));
    return true;
 }
 
@@ -5450,11 +5516,17 @@ bool pco_g5p_compile_general_link(nir_shader *nir, bool half_output, const uint8
             refuse(c, "unknown colour output format");
          if (c->mrt.targets != 1 || c->key->blend)
             refuse(c, "raw32 output needs one unblended target");
+      } else if (c->key->logic_op_enable) {
+         if (c->key->logic_op > 15 || c->key->blend || c->mrt.targets != 1)
+            refuse(c,"logic qualifier requires one unblended UNORM8 target");
+         struct logic_lower l={.key=c->key};
+         nir_shader_intrinsics_pass(nir,lower_logic_store,nir_metadata_control_flow,&l);
+         if(l.partial)refuse(c,"partial NIR stores in logic qualifier");
       } else {
          apply_fs_key(c, nir, c->key);
       }
    }
-   out->blend_mode = c->blend == BLEND_REPLACE ? 0 : c->blend;
+   out->blend_mode = c->key->logic_op_enable ? BLEND_GENERAL : c->blend == BLEND_REPLACE ? 0 : c->blend;
    if (!c->vs && c->key->color_output != PCO_G5P_COLOR_F16 && c->key->write_mask != 0xf)
       out->blend_mode = BLEND_GENERAL; /* destination read requires TRANSLUCENT ISP */
    if (lower(nir))
