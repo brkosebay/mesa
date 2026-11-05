@@ -95,7 +95,7 @@ g9p_nir_options(void)
 }
 
 struct g9p_ctx {
-   unsigned num_keys;
+   unsigned num_keys; G9P_A9_CTX_FIELDS
    struct g9p_code *c;
    struct g9p_shader *out;
    mesa_shader_stage stage;
@@ -1927,7 +1927,7 @@ generate(struct g9p_ctx *ctx, nir_function_impl *impl, unsigned st)
       }
    }
 
-   ctx->ip = 0;
+   ctx->ip = 0; G9P_A9_GENERATE_INIT;
    if (!emit_cf_list(ctx, &impl->body))
       return false;
 
