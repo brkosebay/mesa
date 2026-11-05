@@ -1020,7 +1020,7 @@ unsigned g5p_usc_address_load(uint8_t *out, unsigned dst_half, unsigned byte_cou
  * `base` + (index << shift). Bytes from Apple's own compiles of a constant
  * buffer indexed by a register (tools/mesa-a9-gles3tex/dynubo.metal: v_cexpr,
  * v_cbase `89 11 00 03 81 81 00 41 a1 01 00 86`, f_cflat `89 01 00 01 ...`);
- * the same fields as Henrik's A10 g9p_addr (dst, 0x81 | 4 * base,
+ * the same fields as the A10 G9P driver's g9p_addr (dst, 0x81 | 4 * base,
  * 1 | index << 2 | kill << 7, shift in b11[7:5]). The shift field is
  * corpus-verified 0-4 (isa-g5p.md); kill marks the index's last read. */
 unsigned g5p_usc_address_add_shift(uint8_t *out, unsigned pair_half, unsigned base_common_dword,
@@ -1037,8 +1037,8 @@ unsigned g5p_usc_address_add_shift(uint8_t *out, unsigned pair_half, unsigned ba
 }
 
 /* Vertex class-10 load from an address pair, six bytes: `10 3b 00 01 00 88`
- * (dynubo.metal v_cbase; Henrik's g9p_mem_at vertex form). b4 is 0 here
- * and in Henrik's; Apple's v_cexpr has 1 there (unresolved). */
+ * (dynubo.metal v_cbase; the G9P driver's g9p_mem_at vertex form). b4 is 0 here
+ * and in the G9P driver; Apple's v_cexpr has 1 there (unresolved). */
 unsigned g5p_usc_vertex_address_load(uint8_t *out, unsigned dst_half, unsigned byte_count,
                                      unsigned address_half)
 {
