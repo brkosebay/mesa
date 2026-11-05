@@ -28,6 +28,7 @@
 #   include "pvr_g5p_layout.h"
 #   include "pvr_g5p_tex.h"
 #   include "pvr_g5p_xfb.h"
+#   include "pvr_g5p_compute_hooks.h"
 #endif
 
 /* pvr_arch_image.c, pvr_CreateImageView(): the sampled state of a view is
