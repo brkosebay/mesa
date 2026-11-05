@@ -115,6 +115,7 @@ VkResult PVR_PER_ARCH(g5p_cmd_dispatch)(struct pvr_cmd_buffer *cmd_buffer,
    const unsigned n = state->num_buffers;
    const uint32_t threads =
       state->local_size[0] * state->local_size[1] * state->local_size[2];
+   const uint32_t hw_threads = g5p_cdm_workgroup_threads(threads);
    const uint32_t count = threads | threads << 16;
    struct pvr_suballoc_bo *uniforms_bo;
    uint32_t uniforms[2 * G9P_MAX_BUFFERS + 4] = { 0 };
@@ -311,7 +312,7 @@ VkResult PVR_PER_ARCH(g5p_cmd_dispatch)(struct pvr_cmd_buffer *cmd_buffer,
          group_count[0],
          group_count[1],
          group_count[2],
-         threads,
+         hw_threads,
          DIV_ROUND_UP(state->a9_local_dwords, 16));
 
       pvr_csb_set_relocation_mark(csb);
@@ -322,7 +323,7 @@ VkResult PVR_PER_ARCH(g5p_cmd_dispatch)(struct pvr_cmd_buffer *cmd_buffer,
                              kernel.data_offset,
                              kernel.code_offset,
                              indirect_va,
-                             threads,
+                             hw_threads,
                              0);
          uint32_t *w = pvr_arch_csb_alloc_dwords(csb, 6);
          if (w)

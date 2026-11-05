@@ -8,6 +8,12 @@
 struct g5p_cdm_record {
    uint32_t w[7];
 };
+/* Allocate whole USC tasks while the shader masks to its logical local size. */
+static inline unsigned
+g5p_cdm_workgroup_threads(unsigned logical)
+{
+   return logical > 32 ? (logical + 31) & ~31u : logical;
+}
 static inline uint32_t
 g5p_cdm_sizes(unsigned common, unsigned regs, unsigned data_blocks, bool fence)
 {

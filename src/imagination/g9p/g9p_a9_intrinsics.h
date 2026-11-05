@@ -122,11 +122,6 @@ static bool a9_barrier(struct g9p_ctx *ctx, nir_intrinsic_instr *in)
       g9p_mov_uniform(ctx->c, fence_pair, 56, zero);
       g9p_mov_uniform(ctx->c, fence_pair + 1, 57, zero);
    }
-   if (scope == SCOPE_WORKGROUP && n > 32 && n % 32) {
-      fprintf(stderr,
-              "g5p: partial-task workgroup barriers are not qualified\n");
-      return false;
-   }
    if (scope == SCOPE_WORKGROUP) {
       unsigned N = ctx->a9_barriers_remaining--;
       if (!N || N > 31)
