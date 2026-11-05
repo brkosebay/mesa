@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: MIT */
 /* Included by pvr_g5p_winsys.c after the render-context helpers.
- * Track compute's last fence in the existing idle/VM-edit list, without
- * modifying the speed lane's arena/RAM policy. */
+ * Share the VM's kernel context, last fence and geometry pool with graphics.
+ * Arena and RAM policy remain independent of this ownership. */
 struct g5p_ws_compute_ctx {
    struct pvr_winsys_compute_ctx base;
-   struct g5p_ws_render_ctx tracked;
+   struct g5p_ws_context *tracked;
 };
 static VkResult
 g5p_ws_compute_ctx_create(struct pvr_winsys *base,
@@ -19,11 +19,11 @@ g5p_ws_compute_ctx_create(struct pvr_winsys *base,
    if (!c)
       return vk_error(NULL, VK_ERROR_OUT_OF_HOST_MEMORY);
    c->base.ws = base;
-   c->tracked.base.ws = base;
-   struct g5p_ws *ws = to_ws(base);
-   simple_mtx_lock(&ws->lock);
-   list_addtail(&c->tracked.link, &ws->render_ctxs);
-   simple_mtx_unlock(&ws->lock);
+   c->tracked = g5p_ws_context_get(to_ws(base));
+   if (!c->tracked) {
+      vk_free(base->alloc, c);
+      return vk_error(NULL, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
    *out = &c->base;
    return VK_SUCCESS;
 }
@@ -31,14 +31,7 @@ static void g5p_ws_compute_ctx_destroy(struct pvr_winsys_compute_ctx *base)
 {
    struct g5p_ws_compute_ctx *c =
       container_of(base, struct g5p_ws_compute_ctx, base);
-   struct g5p_ws *ws = to_ws(base->ws);
-   simple_mtx_lock(&ws->lock);
-   list_del(&c->tracked.link);
-   simple_mtx_unlock(&ws->lock);
-   if (c->tracked.context)
-      g5p_drm_render_context_destroy(&ws->drm, c->tracked.context);
-   if (c->tracked.last)
-      drmSyncobjDestroy(base->ws->render_fd, c->tracked.last);
+   g5p_ws_context_put(to_ws(base->ws), c->tracked);
    vk_free(base->ws->alloc, c);
 }
 static VkResult
@@ -76,9 +69,7 @@ g5p_ws_compute_submit(const struct pvr_winsys_compute_ctx *base,
    struct drm_g5p_render_resource res[DRM_G5P_RENDER_MAX_RESOURCES];
    unsigned nres = 0;
    simple_mtx_lock(&ws->lock);
-   int r = 0;
-   if (!c->tracked.context)
-      r = g5p_drm_render_context_create(&ws->drm, &c->tracked.context);
+   int r = g5p_ws_context_prepare(ws, c->tracked);
    if (r) {
       simple_mtx_unlock(&ws->lock);
       return g5p_ws_refuse(VK_ERROR_DEVICE_LOST,
@@ -124,7 +115,7 @@ g5p_ws_compute_submit(const struct pvr_winsys_compute_ctx *base,
       (struct drm_g5p_sync){ .handle = sig, .flags = DRM_G5P_SYNC_SIGNAL };
    uint64_t job = 0;
    r = g5p_drm_submit_compute_typed(&ws->drm,
-                                    c->tracked.context,
+                                    c->tracked->context,
                                     &pass,
                                     res,
                                     nres,
@@ -132,11 +123,8 @@ g5p_ws_compute_submit(const struct pvr_winsys_compute_ctx *base,
                                     n,
                                     &job);
    if (!r) {
-      if (!c->tracked.last &&
-          drmSyncobjCreate(ws->base.render_fd, 0, &c->tracked.last))
-         r = -ENOMEM;
       if (!r &&
-          drmSyncobjTransfer(ws->base.render_fd, c->tracked.last, 0, sig, 0, 0))
+          drmSyncobjTransfer(ws->base.render_fd, c->tracked->last, 0, sig, 0, 0))
          r = -errno;
    }
    if (local_signal)
@@ -146,7 +134,7 @@ g5p_ws_compute_submit(const struct pvr_winsys_compute_ctx *base,
       fprintf(stderr,
               "apple_g5p compute: ctx=%u job=%" PRIu64 " cdm=%#" PRIx64
               "+%u resources=%u ret=%d\n",
-              c->tracked.context,
+              c->tracked->context,
               job,
               stream.cdm_va,
               stream.cdm_end,
