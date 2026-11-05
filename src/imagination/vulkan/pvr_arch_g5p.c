@@ -38,6 +38,7 @@
 #include "pvr_device.h"
 #include "pvr_g5p.h"
 #include "pvr_g5p_dgl.h"
+#include "pvr_g5p_dgl_probe.h"
 #include "pvr_g5p_ds.h"
 #include "pvr_g5p_formats.h"
 #include "pvr_g5p_msaa.h"
@@ -51,7 +52,7 @@
 #include "pvr_rogue_pds_encode.h"
 #include "winsys/apple_g5p/apple_g5p_drm.h"
 
-static const unsigned g5p_mrt_variant_targets[PVR_G5P_MRT_VARIANTS] = { 1, 2, 4 };
+static const unsigned g5p_mrt_variant_targets[PVR_G5P_MRT_VARIANTS] = { 1, 2, 4, 5, 6, 7, 8, 5, 6, 7, 8 };
 
 /* The DOUTU temps of every G5P program (G5P_USC_TEMPS of the A9 ICD) */
 #define G5P_TEMPS 8
@@ -212,8 +213,12 @@ g5p_free_programs(struct pvr_device *device, struct pvr_g5p_programs *p)
       pvr_bo_suballoc_free(p->clear_usc[i]);
       pvr_bo_suballoc_free(p->clear_kick[i].pvr_bo);
    }
-   for (unsigned i = 0; i < 2; i++) {
-      if (p->raw_load[i]) {
+   for (unsigned i = 0; i < ARRAY_SIZE(p->mrt_load); i++) {
+      if (p->mrt_load[i]) {
+         g5p_free_programs(device,p->mrt_load[i]);
+         vk_free(&device->vk.alloc,p->mrt_load[i]);
+      }
+      if (i < ARRAY_SIZE(p->raw_load) && p->raw_load[i]) {
          g5p_free_programs(device, p->raw_load[i]);
          vk_free(&device->vk.alloc, p->raw_load[i]);
       }
@@ -248,7 +253,7 @@ g5p_upload_load(struct pvr_device *device, struct pvr_g5p_programs *p, unsigned 
    struct pco_g5p_program prog;
    VkResult result = VK_SUCCESS;
 
-   if (!(raw ? pvr_g5p_compile_load_raw(&prog, raw == 2) : pvr_g5p_compile_load(&prog))) {
+   if (!(raw >= 3 ? pvr_g5p_compile_load_mrt(&prog,5+(raw-3)%4,raw < 7) : raw ? pvr_g5p_compile_load_raw(&prog, raw == 2) : pvr_g5p_compile_load(&prog))) {
       snprintf(p->load_refusal, sizeof(p->load_refusal), "%s", prog.refusal);
       free(prog.code);
       return VK_SUCCESS;
@@ -261,12 +266,13 @@ g5p_upload_load(struct pvr_device *device, struct pvr_g5p_programs *p, unsigned 
    for (unsigned i = 0; i < prog.num_uploads; i++) {
       const struct pco_g5p_upload *u = &prog.uploads[i];
       if ((u->kind != PCO_G5P_UPLOAD_IMAGE && u->kind != PCO_G5P_UPLOAD_SAMPLER &&
-           u->kind != PCO_G5P_UPLOAD_IMAGE_SIZE) || u->set || u->binding) {
+           u->kind != PCO_G5P_UPLOAD_IMAGE_SIZE) || u->set || u->binding >= (raw >= 3 ? 8 : 1)) {
          snprintf(p->load_refusal, sizeof(p->load_refusal), "a load program upload of kind %u at %u.%u",
                   u->kind, u->set, u->binding);
          free(prog.code);
          return VK_SUCCESS;
       }
+      p->load_upload[i].binding = u->binding;
       p->load_upload[i].kind = u->kind;
       p->load_upload[i].dwords = u->dwords;
       p->load_upload[i].common = u->common;
@@ -372,8 +378,9 @@ g5p_upload_programs(struct pvr_device *device, struct pvr_g5p_programs *p)
 
    for (unsigned i = 0; i < PVR_G5P_MRT_VARIANTS; i++) {
       const unsigned n = g5p_mrt_variant_targets[i];
+      if (n > 4 && !pvr_g5p_mrt8_probe()) continue;
       uint8_t code[MAX2(G5P_MRT_CLEAR_USC_MAX, G5P_MRT_EOT_USC_MAX)];
-      unsigned size = g5p_mrt_clear_usc(code, n);
+      unsigned size = i >= 7 ? g5p_mrt_clear_compact(code,n,false) : g5p_mrt_clear_usc(code, n);
 
       result = pvr_gpu_upload_usc(device, code, size, 64, &p->clear_usc[i]);
       if (result != VK_SUCCESS)
@@ -517,12 +524,9 @@ g5p_pbe_encode(uint64_t q[3], uint32_t key, bool srgb, uint64_t va, uint32_t wid
  * them. Apple's LOAD program is not used.
  */
 static VkResult
-g5p_load_background(struct pvr_cmd_buffer *cmd_buffer, const uint64_t state[4], uint32_t width, uint32_t height,
-                    uint64_t bgnd[4], unsigned raw)
+g5p_load_background(struct pvr_cmd_buffer *cmd_buffer, const uint64_t states[][4], uint32_t width, uint32_t height,
+                    uint64_t bgnd[4], const struct pvr_g5p_programs *p)
 {
-   const struct pvr_g5p_programs *p = &cmd_buffer->device->g5p->programs;
-   if (raw)
-      p = p->raw_load[raw - 1];
    const VkSamplerCreateInfo sci = {
       .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
       .magFilter = VK_FILTER_NEAREST,
@@ -540,7 +544,10 @@ g5p_load_background(struct pvr_cmd_buffer *cmd_buffer, const uint64_t state[4], 
    /* textureSize()'s block (PCO_G5P_UPLOAD_IMAGE_SIZE): width, height, layers, levels */
    const uint32_t size[4] = { width, height, 1, 1 };
    struct pvr_suballoc_bo *state_bo, *sampler_bo, *size_bo;
-   VkResult result = pvr_arch_cmd_buffer_upload_general(cmd_buffer, state, 4 * sizeof(state[0]), &state_bo);
+   unsigned views=1;
+   for (unsigned i=0;i<p->load_uploads;i++) views=MAX2(views,p->load_upload[i].binding+1);
+   const uint64_t *state=states[0];
+   VkResult result = pvr_arch_cmd_buffer_upload_general(cmd_buffer, states, views * 32, &state_bo);
    if (result != VK_SUCCESS)
       return result;
    result = pvr_arch_cmd_buffer_upload_general(cmd_buffer, sampler, sizeof(sampler), &sampler_bo);
@@ -554,7 +561,7 @@ g5p_load_background(struct pvr_cmd_buffer *cmd_buffer, const uint64_t state[4], 
    uint32_t data[4 * ARRAY_SIZE(p->load_upload)] = { 0 };
    for (unsigned i = 0; i < n; i++) {
       const unsigned kind = p->load_upload[i].kind;
-      const uint64_t src = kind == PCO_G5P_UPLOAD_IMAGE   ? state_bo->dev_addr.addr
+      const uint64_t src = kind == PCO_G5P_UPLOAD_IMAGE   ? state_bo->dev_addr.addr + 32 * p->load_upload[i].binding
                            : kind == PCO_G5P_UPLOAD_SAMPLER ? sampler_bo->dev_addr.addr
                                                             : size_bo->dev_addr.addr;
       if (p->load_upload[i].dwords > (kind == PCO_G5P_UPLOAD_IMAGE ? 8u : kind == PCO_G5P_UPLOAD_SAMPLER ? 2u : 4u))
@@ -608,6 +615,7 @@ PVR_PER_ARCH(g5p_job_init)(struct pvr_cmd_buffer *cmd_buffer, struct pvr_sub_cmd
    case 1: v = 0; break;
    case 2: v = 1; break;
    case 4: v = 2; break;
+   case 5: case 6: case 7: case 8: v = n-2; break;
    default: return G5P_REFUSE(cmd_buffer, "%u colour targets (1, 2 or 4 are built)", n);
    }
    /* several targets: Apple's pass shape (pvr_g5p_mrt.h) */
@@ -637,9 +645,10 @@ PVR_PER_ARCH(g5p_job_init)(struct pvr_cmd_buffer *cmd_buffer, struct pvr_sub_cmd
       return vdm;
 
    /* targets: PBE words and clear colours */
-   uint64_t pbe[4][3];
+   uint64_t pbe[8][3];
    unsigned raw = 0;
    const VkFormat first_format = info->attachments[hw_render->eot_surfaces[0].attachment_idx]->vk.format;
+   if (n > 4 && first_format == VK_FORMAT_R8G8B8A8_UNORM) v+=4;
    if (first_format == VK_FORMAT_R32G32B32A32_UINT) raw = 1;
    if (first_format == VK_FORMAT_R32G32B32A32_SINT) raw = 2;
    if (first_format == VK_FORMAT_R32G32_UINT) raw = 3;
@@ -654,9 +663,9 @@ PVR_PER_ARCH(g5p_job_init)(struct pvr_cmd_buffer *cmd_buffer, struct pvr_sub_cmd
          return result;
       g->raw_words = raw_words;
    }
-   float clear[4][4] = { { 0 } };
+   float clear[8][4] = { { 0 } };
    /* a loaded target: its texture state (q0, q1, q2, 0), the load program's image upload */
-   uint64_t load_state[4] = { 0 };
+   uint64_t load_state[8][4] = { { 0 } };
    for (unsigned t = 0; t < n; t++) {
       const struct pvr_image_view *iview = info->attachments[hw_render->eot_surfaces[t].attachment_idx];
       const struct pvr_image *image = pvr_image_view_get_image(iview);
@@ -683,6 +692,12 @@ PVR_PER_ARCH(g5p_job_init)(struct pvr_cmd_buffer *cmd_buffer, struct pvr_sub_cmd
        * the original signed image key. Blending is rejected for integers.
        */
       uint32_t store_key = raw ? key & ~(0x80u << 5) : key;
+      /* Compact outputs already contain the exact four destination bytes.
+       * A physical R32UI write preserves them; the ordinary UNORM PBE key
+       * expects f16 source channels and would convert those packed bits.
+       * Logical view/sampling keys and four-byte pixel/row layout stay intact. */
+      if (n > 4)
+         store_key = pvr_g5p_packed_word_pbe_key();
       if (raw == 5) {
          /* Clear-only RGBA16UI: CPU clamps and packs RG/BA into two
           * uint32 words. Store those exact eight bytes through RG32UI,
@@ -705,8 +720,10 @@ PVR_PER_ARCH(g5p_job_init)(struct pvr_cmd_buffer *cmd_buffer, struct pvr_sub_cmd
       if (raw && getenv("PVR_G5P_DGL_LOG"))
          fprintf(stderr, "DGL-PBE words=%u source=uint-raw key=%08x store_key=%08x state=%016" PRIx64 ",%016" PRIx64 ",%016" PRIx64 "\n",
                  raw_words, key, store_key, pbe[t][0], pbe[t][1], pbe[t][2]);
-      if (!t)
-         pvr_g5p_tex_linear(load_state, key, srgb, addr, iview->vk.extent.width, iview->vk.extent.height,
+      if (n > 4 && getenv("PVR_G5P_DGL_LOG"))
+         fprintf(stderr,"DGL-MRT count=%u target=%u tile_words=8 source_words=%u source_half=%u physical=R32UI logical_key=%08x store_key=%08x\n",n,t,n,2*t,key,store_key);
+      if (!t || n > 4)
+         pvr_g5p_tex_linear(load_state[t], key, srgb, addr, iview->vk.extent.width, iview->vk.extent.height,
                             level->pitch);
       if (!t) {
          g->width = iview->vk.extent.width;
@@ -730,7 +747,7 @@ PVR_PER_ARCH(g5p_job_init)(struct pvr_cmd_buffer *cmd_buffer, struct pvr_sub_cmd
                            "%ux%u): no clear of the area alone", t, area->offset.x, area->offset.y,
                            area->extent.width, area->extent.height, g->width, g->height);
       if (hw_render->color_init[i].op == VK_ATTACHMENT_LOAD_OP_LOAD) {
-         if (n != 1 || t)
+         if (n <= 4 && (n != 1 || t))
             return G5P_REFUSE(cmd_buffer, "LOAD of colour attachment %u of %u (one target is built)", t, n);
          load = true;
       }
@@ -746,6 +763,20 @@ PVR_PER_ARCH(g5p_job_init)(struct pvr_cmd_buffer *cmd_buffer, struct pvr_sub_cmd
    if (load && raw > 2)
       return G5P_REFUSE(cmd_buffer, "integer boundary qualification supports CLEAR only");
    const struct pvr_g5p_programs *load_program = raw && raw <= 2 ? p->raw_load[raw - 1] : p;
+   if (n > 4 && load) {
+      const unsigned variant = v-3;
+      simple_mtx_lock(&device->g5p->clear_lock);
+      struct pvr_g5p_programs *programs=&device->g5p->programs;
+      VkResult lr=VK_SUCCESS;
+      if (!programs->mrt_load[variant]) {
+         programs->mrt_load[variant]=vk_zalloc(&device->vk.alloc,sizeof(*programs),8,VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+         if (!programs->mrt_load[variant]) lr=VK_ERROR_OUT_OF_HOST_MEMORY;
+         else lr=g5p_upload_load(device,programs->mrt_load[variant],v);
+      }
+      load_program=programs->mrt_load[variant];
+      simple_mtx_unlock(&device->g5p->clear_lock);
+      if (lr != VK_SUCCESS) return lr;
+   }
    if (load && !load_program->load_usc)
       return G5P_REFUSE(cmd_buffer, "LOAD of a colour attachment%s: the load program: %s",
                         partial ? " (a partial render area)" : "", load_program->load_refusal);
@@ -795,7 +826,7 @@ PVR_PER_ARCH(g5p_job_init)(struct pvr_cmd_buffer *cmd_buffer, struct pvr_sub_cmd
    /* PDS_BGRND0..3: the clear kick, the clear DMA, its data; sizes */
    uint64_t bgnd[4] = { 0 };
    if (load) {
-      result = g5p_load_background(cmd_buffer, load_state, g->width, g->height, bgnd, raw);
+      result = g5p_load_background(cmd_buffer, load_state, g->width, g->height, bgnd, load_program);
       if (result != VK_SUCCESS)
          return result;
    } else {

@@ -8,6 +8,7 @@
 #include "winsys/apple_g5p/pvr_g5p_winsys.h"
 #include "pvr_g5p.h"
 #include "pvr_g5p_vertex.h"
+#include "pvr_g5p_dgl_probe.h"
 /* G5P fetches the vertex formats of pvr_g5p_vertex_format_info() (32-bit
  * float and integer, 8/16-bit normalized and scaled, 16-bit float) with
  * dword strides. Of those, it advertises the ones a whole number of dwords
@@ -207,6 +208,11 @@ pvr_g5p_vertex_buffer_format(VkFormat vk_format)
    if (PVR_HAS_FEATURE(&pdevice->dev_info, apple_g5p)) { \
       supported_features.logicOp = false; \
       supported_features.sampleRateShading = false; \
+      if (pvr_g5p_mrt8_probe()) { \
+         supported_properties.maxColorAttachments = 8; \
+         supported_properties.maxFragmentOutputAttachments = 8; \
+         supported_properties.maxFragmentCombinedOutputResources = 8; \
+      } \
       supported_features.geometryStreams = false; \
       supported_properties.transformFeedbackDraw = false; \
       supported_properties.transformFeedbackQueries = true; \

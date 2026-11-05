@@ -25,6 +25,11 @@
 #include "pvr_g5p_format_table.h"
 #include "pvr_g5p_formats.h"
 
+uint32_t pvr_g5p_packed_word_pbe_key(void)
+{
+   return pvr_g5p_format_find(VK_FORMAT_R32_UINT)->key;
+}
+
 bool
 pvr_g5p_formats_probe(void)
 {

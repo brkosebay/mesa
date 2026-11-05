@@ -99,3 +99,27 @@ pvr_g5p_dgl_clear_pack(uint32_t output[4], const uint32_t input[4], bool uint16)
       memcpy(output, value, sizeof(value));
    }
 }
+
+/* Raw physical words after semantic UNORM packing. Only the full-write
+ * compact MRT path calls this; destination read/merge is a separate plan.
+ */
+size_t
+pvr_g5p_dgl_output_words(uint8_t *output, size_t capacity,
+                        const struct pvr_g5p_dgl_source *sources, unsigned words)
+{
+   uint8_t code[10 * G5P_USC_MAX];
+   size_t size = 0;
+   if (!output || !sources || words < 1 || words > 8) return 0;
+   for (unsigned c = 0; c < words; c++) {
+      const struct pvr_g5p_dgl_source *s = &sources[c];
+      if (!s->immediate && (s->value > 31 || s->group > 1)) return 0;
+      unsigned n = s->immediate ? g5p_usc_immediate(code+size,2*c,s->value,0,-1)
+                               : g5p_usc_move(code+size,2*c,2*s->value,0,s->group,1);
+      if (!n) return 0;
+      size += n;
+   }
+   size += g5p_usc_emit_mrt(code+size,words,0);
+   size += g5p_usc_special(code+size,true);
+   if (capacity < size) return 0;
+   memcpy(output,code,size);return size;
+}

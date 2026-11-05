@@ -33,7 +33,7 @@ struct pvr_sub_cmd_gfx;
 struct pvr_suballoc_bo;
 
 /* Colour-target counts with programs: 1, 2 and 4, the counts with an Apple witness (others are refused) */
-#define PVR_G5P_MRT_VARIANTS 3
+#define PVR_G5P_MRT_VARIANTS 11
 
 /*
  * The device-level programs every G5P render uses, uploaded once per
@@ -78,11 +78,12 @@ struct pvr_g5p_programs {
    unsigned load_temps, load_common_dwords, load_uploads;
    struct {
       unsigned kind; /* PCO_G5P_UPLOAD_IMAGE, _SAMPLER or _IMAGE_SIZE */
-      unsigned dwords, common;
-   } load_upload[3];
+      unsigned dwords, common, binding;
+   } load_upload[32];
    char load_refusal[128];
    /* Lazy integer variants: float device allocation order remains identical. */
    struct pvr_g5p_programs *raw_load[2];
+   struct pvr_g5p_programs *mrt_load[8];
    struct pvr_suballoc_bo *raw_clear_usc[2];
    struct pvr_suballoc_bo *raw_eot_usc;
    struct pvr_pds_upload raw_clear_kick[2];
@@ -160,7 +161,7 @@ struct pvr_g5p_fetch {
  * pco_g5p_upload): `kind` a pco_g5p_upload_kind, read at each draw from the
  * bound descriptor (set, binding) + offset bytes (the level of an image-size
  * upload), `dwords` into common-store dword `common` */
-#define PVR_G5P_MAX_FS_UPLOADS 12
+#define PVR_G5P_MAX_FS_UPLOADS 32
 struct pvr_g5p_upload {
    uint8_t kind, set, binding, dwords;
    uint16_t offset, common;
@@ -249,6 +250,7 @@ bool pvr_g5p_compile_stage(const VkPipelineShaderStageCreateInfo *stage_info, bo
  * texture() of the attachment, bound as set 0 binding 0, at the fragment's
  * pixel centre. false with out->refusal set. */
 bool pvr_g5p_compile_load(struct pco_g5p_program *out);
+bool pvr_g5p_compile_load_mrt(struct pco_g5p_program *out, unsigned targets, bool bgra);
 bool pvr_g5p_compile_load_raw(struct pco_g5p_program *out, bool is_signed);
 /* The clear quad's stages, built with nir_builder (pvr_g5p_nir.c): the
  * vertex stage passes its vec4 position at location 0 through, the

@@ -223,7 +223,7 @@ struct gctx {
    nir_intrinsic_instr *vend_store; /* eager: the output component written by the final vend */
    unsigned vend_comp;
    /* common store */
-   struct tex_bind tex[4];
+   struct tex_bind tex[8];
    unsigned ntex;
    struct { unsigned set, binding, lod, common; } tsize[4]; /* textureSize/QueryLevels */
    unsigned nsize;
@@ -1760,13 +1760,22 @@ static void plan_common(struct gctx *c)
       next = MAX2(next, 4);
    for (unsigned i = 0; i < c->ntex; i++) {
       struct tex_bind *t = &c->tex[i];
-      t->image = align(next, 8);
-      t->sampler = t->image + 8;
-      next = t->image + 10;
+      if (c->key->shared_read_sampler) {
+         if (c->nssbo || c->blend == BLEND_GENERAL)
+            refuse(c,"shared LOAD sampler with storage/blend uploads");
+         t->image = 8*i;
+         t->sampler = 8*c->ntex;
+         next = t->sampler+2;
+      } else {
+         t->image = align(next, 8);
+         t->sampler = t->image + 8;
+         next = t->image + 10;
+      }
       if (t->image / 2 > 28 || t->sampler / 2 > 32)
          refuse(c, "texture descriptors beyond the measured common-store selectors");
       add_upload(c, PCO_G5P_UPLOAD_IMAGE, t->set, t->binding, 0, 8, t->image);
-      add_upload(c, PCO_G5P_UPLOAD_SAMPLER, t->sset, t->sbinding, 32, 2, t->sampler);
+      if (!c->key->shared_read_sampler || !i)
+         add_upload(c, PCO_G5P_UPLOAD_SAMPLER, t->sset, t->sbinding, 32, 2, t->sampler);
    }
    /* Pointer pairs of register-indexed UBO arrays: even dwords below 32 (the
     * addr.add_shift base field, 0x81 | 4 * dword). */
@@ -4020,9 +4029,42 @@ static bool out_const(struct gctx *c, unsigned k, uint16_t *h)
    return true;
 }
 
+static bool compact_output(const struct pco_g5p_fs_key *key)
+{
+   return key->color_output == PCO_G5P_COLOR_PACKED_BGRA8 ||
+          key->color_output == PCO_G5P_COLOR_PACKED_RGBA8;
+}
+
+/* Semantic UNORM8 conversion, the same saturate/round-even rule as
+ * nir_format_float_to_unorm(), lowered through existing G5P ALU encoders.
+ * Packing occurs at each output store, so eight targets retain eight
+ * dwords rather than 32 live float components. No pattern matching.
+ */
+static bool lower_compact_store(nir_builder *b, nir_intrinsic_instr *in, void *data)
+{
+   const struct pco_g5p_fs_key *key = data;
+   if (in->intrinsic != nir_intrinsic_store_output) return false;
+   if (nir_intrinsic_component(in) || in->src[0].ssa->num_components != 4 || nir_intrinsic_write_mask(in) != 15)
+      return false; /* rejected below: no partial packed output contract */
+   b->cursor = nir_before_instr(&in->instr);
+   nir_def *rgba = in->src[0].ssa;
+   nir_def *packed = nir_imm_int(b,0);
+   for (unsigned c = 0; c < 4; c++) {
+      const unsigned channel = key->color_output == PCO_G5P_COLOR_PACKED_BGRA8 && !(c & 1) ? 2-c : c;
+      nir_def *v = nir_fsat(b,nir_channel(b,rgba,channel));
+      v = nir_f2u32(b,nir_fround_even(b,nir_fmul_imm(b,v,255.0f)));
+      packed = nir_ior(b,packed,nir_ishl_imm(b,v,8*c));
+   }
+   nir_src_rewrite(&in->src[0],packed);
+   nir_intrinsic_set_write_mask(in,1);
+   in->num_components = 1;
+   return true;
+}
+
 /* Output-plan decisions that need use counts. */
 static void plan_fs_output(struct gctx *c)
 {
+   if (compact_output(c->key)) return;
    if (c->key->color_output != PCO_G5P_COLOR_F16) {
       c->mrt.words = c->mrt.emit_field = c->mrt.pixel_output_width = 4;
       return; /* No narrow f16 loads, output ALU fusion, or f16 constants. */
@@ -4141,6 +4183,22 @@ static void fs_output(struct gctx *c)
    c->now = DISCARD_AT;
    fs_discards(c);
    c->now = LAST_END;
+   if (compact_output(c->key)) {
+      struct pvr_g5p_dgl_source sources[8] = {0};
+      for (unsigned t = 0; t < c->mrt.targets; t++) {
+         if (c->slot_written[t] != 1) refuse(c,"compact MRT requires a packed full store to each target");
+         struct ref r = c->out[4*t];
+         sources[t].immediate = is_const(c,r);
+         sources[t].value = sources[t].immediate ? V(c,r.def,r.comp)->imm : reg_of(c,r,"compact MRT output");
+         sources[t].group = sources[t].immediate ? 0 : vgrp(c,r);
+         for (unsigned j=t+1;j<c->mrt.targets;j++)
+            if (c->out[4*j].def==r.def && c->out[4*j].comp==r.comp) sources[t].group=0;
+      }
+      uint8_t code[10*G5P_USC_MAX];
+      size_t size=pvr_g5p_dgl_output_words(code,sizeof(code),sources,c->mrt.words);
+      if (!size) refuse(c,"compact MRT output source cannot be encoded");
+      put(c,code,size,"compact MRT raw output");free_scratch(c);return;
+   }
    if (c->key->color_output != PCO_G5P_COLOR_F16) {
       struct pvr_g5p_dgl_source sources[4] = {0};
       for (unsigned k = 0; k < 4; k++) {
@@ -5382,7 +5440,11 @@ bool pco_g5p_compile_general_link(nir_shader *nir, bool half_output, const uint8
          mr = g5p_mrt_check_key(&c->mrt, c->key->blend, c->key->write_mask);
       if (mr != G5P_MRT_OK)
          refuse(c, "%s", g5p_mrt_refusal_str(mr));
-      if (c->key->color_output != PCO_G5P_COLOR_F16) {
+      if (compact_output(c->key)) {
+         if (c->mrt.targets <= 4 || c->mrt.targets > 8 || c->key->blend || c->key->write_mask != 15)
+            refuse(c,"compact MRT qualification requires five through eight full-write unblended targets");
+         NIR_PASS(_,nir,nir_shader_intrinsics_pass,lower_compact_store,nir_metadata_control_flow,(void *)c->key);
+      } else if (c->key->color_output != PCO_G5P_COLOR_F16) {
          if (c->key->color_output != PCO_G5P_COLOR_UINT32 &&
              c->key->color_output != PCO_G5P_COLOR_SINT32)
             refuse(c, "unknown colour output format");

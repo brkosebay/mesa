@@ -27,24 +27,24 @@
 #include <stdint.h>
 #include <string.h>
 
-#define G5P_MRT_MAX 4
+#define G5P_MRT_MAX 8
 #define G5P_MRT_PBE_DWORDS 7      /* per target */
 #define G5P_MRT_PBE_STRIDE 8      /* dwords per target in the common store */
 #define G5P_MRT_CLEAR_DWORDS 4    /* f32 clear colour per target */
 #define G5P_MRT_CLEAR_USC_MAX (16 * 4 * G5P_MRT_MAX + 8)
-#define G5P_MRT_EOT_USC_MAX 130
+#define G5P_MRT_EOT_USC_MAX 194
 
 /* Target counts with an Apple witness for the whole pass: 1, 2 and 4. */
 static inline bool g5p_mrt_count_ok(unsigned n)
 {
-   return n == 1 || n == 2 || n == 4;
+   return n == 1 || n == 2 || (n >= 4 && n <= 8);
 }
 
 /* Pixel output width of the pass (UAPI pixel_output_width): two output
  * registers per 8-bit RGBA target. iOS record+0x6dc: 2, 4, 8. */
 static inline uint32_t g5p_mrt_pixel_width(unsigned n)
 {
-   return 2 * n;
+   return n > 4 ? 8 : 2 * n;
 }
 
 /* PBE dwords the end-of-tile DOUTD moves: 7, 15, 31. */
@@ -58,7 +58,7 @@ static inline unsigned g5p_mrt_pbe_dwords(unsigned n)
  * 0x402, 0x402, 0x802; Apple's sizes are twice DIV_ROUND_UP(dwords, 16)). */
 static inline uint32_t g5p_mrt_eot_info(unsigned n)
 {
-   return n == 4 ? 0x802 : 0x402;
+   return ((g5p_mrt_pbe_dwords(n) + 15) / 16) * 0x400 | 2;
 }
 
 /* Partial-render restore SIZEINFO (restore[1], record+0x51c): usc_sharedsize
@@ -78,16 +78,40 @@ static inline unsigned g5p_mrt_pbe_block(uint32_t *out, unsigned n, const uint64
          w[2 * q] = (uint32_t)pbe[t][q];
          w[2 * q + 1] = (uint32_t)(pbe[t][q] >> 32);
       }
-      w[6] = 4 * t;
+      w[6] = (n > 4 ? 2 : 4) * t;
       if (t + 1 < n)
          w[7] = 0xffffffff;
    }
    return g5p_mrt_pbe_dwords(n);
 }
 
+/* A9 builtin witnesses for 5..8 UNORM targets use one packed dword
+ * per target; BGRA8 byte order is B,G,R,A. Each scalar is converted to
+ * UNORM8 and merged into one output half, with no captured program.
+ */
+static inline unsigned g5p_mrt_clear_compact(uint8_t *out, unsigned n, bool bgra)
+{
+   unsigned o = 0;
+   for (unsigned t = 0; t < n; t++)
+      for (unsigned h = 0; h < 2; h++)
+         for (unsigned byte = 0; byte < 2; byte++) {
+            const unsigned c = h * 2 + byte;
+            const unsigned channel = bgra && !(c & 1) ? 2 - c : c;
+            const unsigned src = 4 * t + channel, dst = 2 * t + h;
+            const uint8_t ins[16] = {0x8a,0x01,dst,0x01,0x05,
+               byte ? (uint8_t)(0x81 | dst << 1) : 0x01,0x20,0x01,
+               (uint8_t)(0x81 | (src & 31) << 2),0x01,(uint8_t)(2 * (src >> 5)),0x41,0x60,
+               byte ? 0x57 : 0x07,byte ? 0x1c : 0x10,0x00};
+            memcpy(out+o,ins,sizeof(ins));o += sizeof(ins);
+         }
+   const uint8_t tail[6] = {0x1c,(uint8_t)((n & 7) << 4 | 1),0,8,0,0x80};
+   memcpy(out+o,tail,sizeof(tail));return o+sizeof(tail);
+}
+
 /* The clear program. Returns its size, 16 * 4N + 6. */
 static inline unsigned g5p_mrt_clear_usc(uint8_t *out, unsigned n)
 {
+   if (n > 4) return g5p_mrt_clear_compact(out,n,true);
    unsigned o = 0;
    for (unsigned t = 0; t < n; t++)
       for (int c = 3; c >= 0; c--) {
@@ -110,8 +134,8 @@ static inline unsigned g5p_mrt_eot_usc_mode(uint8_t *out, unsigned n, bool integ
    unsigned o = 0;
    for (unsigned k = 0; k < n; k++) {
       uint8_t t = n - 1 - k;
-      const uint8_t ins[12] = {0x88, 0x01, (uint8_t)(2 * t), 0x01, (uint8_t)(0x99 + 0x20 * k), 0x01,
-                               0x00, 0x41, 0x28, 0x01, 0x39, 0x00};
+      const uint8_t ins[12] = {0x88, 0x01, (uint8_t)(2 * t), 0x01, (uint8_t)(0x99 + 0x20 * (k & 3)), 0x01,
+                               (uint8_t)(2 * (k >> 2)), 0x41, 0x28, 0x01, 0x39, 0x00};
       memcpy(out + o, ins, sizeof(ins));
       o += sizeof(ins);
    }
@@ -142,6 +166,6 @@ static inline unsigned g5p_mrt_eot_usc_mode(uint8_t *out, unsigned n, bool integ
  */
 static inline unsigned g5p_mrt_eot_usc(uint8_t *out, unsigned n)
 {
-   return g5p_mrt_eot_usc_mode(out, n, false);
+   return g5p_mrt_eot_usc_mode(out, n, n > 4);
 }
 #endif

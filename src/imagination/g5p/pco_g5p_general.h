@@ -16,7 +16,7 @@
 /* Runaway bound on one program (the backend has no size limit of its own; the
  * ICD's job arena is what bounds a draw's programs, see pco_g5p_general.c). */
 #define PCO_G5P_PROGRAM_MAX (1u << 20)
-#define PCO_G5P_MAX_UPLOADS 12
+#define PCO_G5P_MAX_UPLOADS 32
 #define PCO_G5P_MAX_ATTRIBS 16
 #define PCO_G5P_COMMON_DWORDS 64
 /* Every vertex program that has flown needs <= 12 temps; 16 and 20 wedged
@@ -80,6 +80,8 @@ enum pco_g5p_color_output {
    PCO_G5P_COLOR_F16 = 0,
    PCO_G5P_COLOR_UINT32,
    PCO_G5P_COLOR_SINT32,
+   PCO_G5P_COLOR_PACKED_BGRA8,
+   PCO_G5P_COLOR_PACKED_RGBA8,
 };
 
 struct pco_g5p_fs_key {
@@ -92,6 +94,8 @@ struct pco_g5p_fs_key {
     * round-16..18 convention, group 1 on every fragment read (default, so
     * those scenes keep their bytes). PVR_G5P_GROUPS=last-read turns it on. */
    bool last_read_groups;
+   /* Internal LOAD helpers bind equivalent nearest samplers to every image. */
+   bool shared_read_sampler;
    /* Fuse an fmul and the fadds it feeds into ffmas (G9P's fusion), with
     * last_read_groups only. Off by default so proven programs keep their
     * bytes; PVR_G5P_FUSE=ffma turns it on. Captured shapes are not

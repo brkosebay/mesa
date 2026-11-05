@@ -23,7 +23,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define G5P_MRT_MAX_TARGETS 4
+#define G5P_MRT_MAX_TARGETS 8
 #define G5P_MRT_FS_SLOTS 8 /* FRAG_RESULT_DATA0..DATA7 */
 #define G5P_MRT_HALVES_PER_TARGET 4
 #define G5P_MRT_MAX_HALVES (G5P_MRT_MAX_TARGETS * G5P_MRT_HALVES_PER_TARGET)
@@ -49,7 +49,7 @@ static inline const char *g5p_mrt_refusal_str(enum g5p_mrt_refusal r)
    case G5P_MRT_NO_TARGETS:
       return "no colour targets";
    case G5P_MRT_TOO_MANY_TARGETS:
-      return "more than four colour targets";
+      return "more than eight colour targets";
    case G5P_MRT_THREE_TARGETS:
       return "three colour targets: Apple's compiler was only observed for 1, 2 and 4 "
              "(the pixel output width 6 is not a kernel width)";
@@ -106,7 +106,7 @@ static inline unsigned g5p_mrt_emit_words(unsigned field)
 /* Word counts for which an Apple A9 witness exists for a homogeneous set. */
 static inline bool g5p_mrt_emit_words_witnessed(unsigned words)
 {
-   return words == 2 || words == 4 || words == 8;
+   return words == 2 || (words >= 4 && words <= 8);
 }
 
 static inline enum g5p_mrt_refusal g5p_mrt_out_plan_make(unsigned targets, struct g5p_mrt_out_plan *p)
@@ -119,11 +119,11 @@ static inline enum g5p_mrt_refusal g5p_mrt_out_plan_make(unsigned targets, struc
    if (targets == 3)
       return G5P_MRT_THREE_TARGETS;
    p->targets = targets;
-   p->words = targets * G5P_MRT_WORDS_PER_TARGET;
+   p->words = targets > 4 ? targets : targets * G5P_MRT_WORDS_PER_TARGET;
    p->emit_field = g5p_mrt_emit_field(p->words);
-   p->pixel_output_width = p->words; /* [D] 2/4/8, matches the kernel table; mrt2/mrt4 capture confirms */
+   p->pixel_output_width = p->words > 4 ? 8 : p->words; /* kernel allocations are powers of two */
    for (unsigned t = 0; t < targets; t++)
-      p->first_half[t] = g5p_mrt_half(t, 0);
+      p->first_half[t] = targets > 4 ? 2 * t : g5p_mrt_half(t, 0);
    return G5P_MRT_OK;
 }
 

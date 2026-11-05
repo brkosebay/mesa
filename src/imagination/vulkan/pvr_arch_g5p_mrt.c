@@ -20,6 +20,7 @@
 #include "pvr_cmd_buffer.h"
 #include "pvr_device.h"
 #include "pvr_g5p_mrt.h"
+#include "pvr_g5p_dgl_probe.h"
 #include "pvr_hw_pass.h"
 #include "pvr_image.h"
 
@@ -35,6 +36,8 @@ PVR_PER_ARCH(g5p_mrt_pipeline_check)(struct pvr_device *device, unsigned n, cons
 
    if (n <= 1)
       return VK_SUCCESS;
+   if (n > 4 && !pvr_g5p_mrt8_probe())
+      return G5P_MRT_REFUSE(device,"eight-target qualification is not enabled");
    /* 1, 2 or 4: the counts with Apple's pass and a kernel pixel output width */
    enum g5p_mrt_refusal r = g5p_mrt_out_plan_make(n, &plan);
    if (r != G5P_MRT_OK)
@@ -70,6 +73,8 @@ PVR_PER_ARCH(g5p_mrt_pass_check)(struct pvr_cmd_buffer *cmd_buffer,
 
    if (n <= 1)
       return VK_SUCCESS;
+   if (n > 4 && !pvr_g5p_mrt8_probe())
+      return G5P_MRT_REFUSE(cmd_buffer,"eight-target qualification is not enabled");
    if (n > G5P_MRT_MAX_TARGETS || n == 3)
       return G5P_MRT_REFUSE(cmd_buffer, "%u colour targets: %s", n,
                             g5p_mrt_refusal_str(n == 3 ? G5P_MRT_THREE_TARGETS : G5P_MRT_TOO_MANY_TARGETS));
@@ -97,10 +102,19 @@ PVR_PER_ARCH(g5p_mrt_pass_check)(struct pvr_cmd_buffer *cmd_buffer,
       va[t] = g5p_mrt_target_va(iview[t], &bytes[t]);
    }
 
+   if (n > 4) {
+      bool has_clear=false, has_load=false;
+      for (unsigned i=0;i<hw_render->color_init_count;i++) {
+         has_clear |= hw_render->color_init[i].op == VK_ATTACHMENT_LOAD_OP_CLEAR;
+         has_load |= hw_render->color_init[i].op == VK_ATTACHMENT_LOAD_OP_LOAD;
+      }
+      if (has_clear && has_load)
+         return G5P_MRT_REFUSE(cmd_buffer,"compact MRT mixed CLEAR/LOAD backgrounds are not built");
+   }
    /* The background programs clear or leave every target; a LOAD would need
     * an N-target LOAD background (none exists) */
    for (unsigned i = 0; i < hw_render->color_init_count; i++)
-      if (hw_render->color_init[i].op == VK_ATTACHMENT_LOAD_OP_LOAD)
+      if (n <= 4 && hw_render->color_init[i].op == VK_ATTACHMENT_LOAD_OP_LOAD)
          return G5P_MRT_REFUSE(cmd_buffer, "LOAD of a colour attachment with %u colour targets (no N-target LOAD "
                                "background)", n);
 

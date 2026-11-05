@@ -19,6 +19,8 @@ struct pvr_g5p_dgl_source {
  * Returns zero for an unencodable source or insufficient output capacity.
  * Writes nothing to output on failure. This is not the packed-f16 path.
  */
+size_t pvr_g5p_dgl_output_words(uint8_t *output, size_t capacity,
+                         const struct pvr_g5p_dgl_source *sources, unsigned words);
 size_t pvr_g5p_dgl_output(uint8_t *output, size_t capacity,
                          const struct pvr_g5p_dgl_source sources[4], unsigned write_mask);
 /* Background clear: raw common-store dwords, no float conversion. */
