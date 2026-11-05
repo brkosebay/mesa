@@ -739,7 +739,10 @@ PVR_PER_ARCH(g5p_job_init)(struct pvr_cmd_buffer *cmd_buffer, struct pvr_sub_cmd
    const VkRect2D *area = &info->render_area;
    const bool partial = area->offset.x || area->offset.y || area->extent.width != g->width ||
                         area->extent.height != g->height;
-   bool load = partial;
+   if (sub_cmd->barrier_load &&
+       (n != 1 || g->samples != 1 || job->has_depth_attachment || job->has_stencil_attachment))
+      return G5P_REFUSE(cmd_buffer, "continuation LOAD: one colour, 1x, no depth/stencil qualified");
+   bool load = partial || sub_cmd->barrier_load;
    for (unsigned i = 0; i < hw_render->color_init_count; i++) {
       const unsigned t = i; /* color_init follows the EOT surfaces' order */
       if (partial && hw_render->color_init[i].op == VK_ATTACHMENT_LOAD_OP_CLEAR)

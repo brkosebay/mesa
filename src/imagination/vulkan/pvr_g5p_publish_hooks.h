@@ -213,6 +213,9 @@ pvr_g5p_vertex_buffer_format(VkFormat vk_format)
          supported_properties.maxFragmentOutputAttachments = 8; \
          supported_properties.maxFragmentCombinedOutputResources = 8; \
       } \
+      supported_extensions.EXT_conditional_rendering = pvr_g5p_conditional_enabled(); \
+      supported_features.conditionalRendering = pvr_g5p_conditional_enabled(); \
+      supported_features.inheritedConditionalRendering = false; \
       supported_features.geometryStreams = false; \
       supported_properties.transformFeedbackDraw = false; \
       supported_properties.transformFeedbackQueries = true; \

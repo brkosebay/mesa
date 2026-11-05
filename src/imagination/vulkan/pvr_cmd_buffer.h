@@ -558,6 +558,7 @@ struct pvr_cmd_buffer_state {
    /* G5P transform feedback (pvr_arch_g5p_xfb.c): bindings and events, NULL
     * until the command buffer uses any */
    struct pvr_g5p_xfb_cmd *g5p_xfb;
+   struct pvr_g5p_conditional_state *g5p_conditional;
 #endif
 };
 

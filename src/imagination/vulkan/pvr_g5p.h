@@ -119,8 +119,11 @@ struct pvr_g5p_job {
    bool msaa_resolve;           /* 4x: the PBE resolves target 0 into a one-sample view */
    bool enabled;
    struct g5p_perf_tail perf;   /* what the job writes, for the winsys (pvr_g5p_perf.h) */
-   /* last: what the pass's draws read outside the arena (pvr_arch_g5p_perf_draw()); job init keeps it */
+   /* Draw-collected state below survives job init, including predicate snapshots. */
    struct pvr_g5p_perf_reads reads;
+   struct pvr_buffer *conditional_buffer;
+   uint64_t conditional_offset;
+   bool conditional_inverted;
 };
 
 /* ---- graphics (pvr_arch_g5p_gfx.c, pvr_g5p_nir.c) ---- */

@@ -1233,3 +1233,25 @@ VkResult pvr_g5p_winsys_create(int render_fd, int display_fd, const VkAllocation
    *ws_out = &ws->base;
    return VK_SUCCESS;
 }
+
+/* Predicate fallback: called only after all preceding queue fences completed. */
+VkResult pvr_g5p_winsys_read_u32(struct pvr_winsys_bo *bo, uint64_t offset, uint32_t *value)
+{
+   struct g5p_ws_bo *b = to_bo(bo);
+   struct g5p_ws *ws = to_ws(bo->ws);
+   if (!b->cpu || offset > bo->size || bo->size - offset < 4)
+      return g5p_ws_refuse(VK_ERROR_DEVICE_LOST, "predicate read outside BO");
+   const uint64_t va = b->va + offset;
+   simple_mtx_lock(&ws->lock);
+   const struct g5p_drm_bo *k = b->own ? &b->kbo : NULL;
+   for (unsigned i = 0; !k && i < ws->chunk_count; i++)
+      if (va >= ws->chunks[i].va && va + 4 <= ws->chunks[i].va + ws->chunks[i].size)
+         k = &ws->chunks[i];
+   if (!k || g5p_drm_bo_sync_range(&ws->drm, k, DRM_G5P_BO_SYNC_TO_CPU, va, va + 4)) {
+      simple_mtx_unlock(&ws->lock);
+      return g5p_ws_refuse(VK_ERROR_DEVICE_LOST, "predicate CPU cache synchronization failed");
+   }
+   memcpy(value, b->cpu + offset, 4);
+   simple_mtx_unlock(&ws->lock);
+   return VK_SUCCESS;
+}

@@ -136,8 +136,13 @@
  * that overflowed is copied once the job retired (pvr_g5p_xfb.h). Nothing
  * for a command buffer without transform feedback.
  */
+#include "pvr_g5p_conditional.h"
 #define PVR_G5P_HOOK_xfb_before_job(device, cmd_buffer, sub_cmd)                       \
    {                                                                                   \
+      bool cond_run_; \
+      const VkResult cond_r_ = pvr_g5p_conditional_test(device, queue, sub_cmd, &cond_run_); \
+      if (cond_r_ != VK_SUCCESS) return cond_r_; \
+      if (!cond_run_) return VK_SUCCESS; \
       const VkResult xfb_r_ = pvr_arch_g5p_xfb_before_job(device, cmd_buffer, sub_cmd); \
       if (xfb_r_ != VK_SUCCESS)                                                        \
          return xfb_r_;                                                                \
@@ -191,7 +196,7 @@
       return pvr_g5p_xfb_query_results(device, pool, first, count, data, stride, flags);
 
 /* pvr_arch_cmd_buffer.c, pvr_cmd_buffer_free_resources() */
-#define PVR_G5P_HOOK_xfb_free(cmd_buffer) pvr_arch_g5p_xfb_free(cmd_buffer);
+#define PVR_G5P_HOOK_xfb_free(cmd_buffer) pvr_arch_g5p_xfb_free(cmd_buffer); pvr_g5p_conditional_free(cmd_buffer);
 
 /* rogue/pvr_blit.c, vkCmdClearAttachments(): Rogue's clear programs and
  * words do not run on the A9 (G9P's hung its geometry job); G5P's own

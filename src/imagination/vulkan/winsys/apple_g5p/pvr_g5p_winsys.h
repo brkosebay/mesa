@@ -10,11 +10,14 @@
 #define PVR_G5P_WINSYS_H
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <vulkan/vulkan_core.h>
 
 #define PVR_G5P_DRIVER_NAME "apple_g5p"
 
 struct pvr_winsys;
+struct pvr_winsys_bo;
+VkResult pvr_g5p_winsys_read_u32(struct pvr_winsys_bo *bo, uint64_t offset, uint32_t *value);
 
 VkResult pvr_g5p_winsys_create(int render_fd, int display_fd,
                                const VkAllocationCallbacks *alloc,
