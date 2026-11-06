@@ -861,6 +861,9 @@ is_format_color_renderable(const struct gl_context *ctx, mesa_format format,
       return _mesa_has_EXT_color_buffer_float(ctx);
    case GL_RGB16F:
       return _mesa_has_EXT_color_buffer_half_float(ctx);
+   case GL_R11F_G11F_B10F:
+      /* color-renderable only with EXT_color_buffer_float, or in ES 3.2 */
+      return _mesa_has_EXT_color_buffer_float(ctx) || _mesa_is_gles32(ctx);
    case GL_RGB10_A2:
       return _mesa_is_gles3(ctx);
    case GL_RGB32F:
@@ -2642,8 +2645,11 @@ _mesa_base_fbo_format(const struct gl_context *ctx, GLenum internalFormat)
              ctx->Extensions.ARB_texture_float &&
              ctx->Extensions.ARB_framebuffer_object ? GL_INTENSITY : 0;
    case GL_R11F_G11F_B10F:
+      /* ES: color-renderable only with EXT_color_buffer_float, or in ES 3.2
+       * (EXT_color_buffer_half_float does not cover it) */
       return ((_mesa_is_desktop_gl(ctx) && ctx->Extensions.EXT_packed_float) ||
-              _mesa_is_gles3(ctx) /* EXT_color_buffer_float */ )
+              (_mesa_is_gles3(ctx) &&
+               (_mesa_has_EXT_color_buffer_float(ctx) || _mesa_is_gles32(ctx))))
          ? GL_RGB : 0;
 
    case GL_RGBA8UI_EXT:
